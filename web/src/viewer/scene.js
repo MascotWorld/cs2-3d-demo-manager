@@ -655,8 +655,7 @@ export class DemoScene {
     this.softwareRenderer = /swiftshader|llvmpipe|softpipe|software (renderer|rasterizer)|microsoft basic render|\bwarp\b/i.test(this.rendererName);
     this.activeQuality = this.qualitySetting === 'auto' ? (this.softwareRenderer ? 'low' : 'high') : this.qualitySetting;
     const preset0 = QUALITY_PRESETS[this.activeQuality] || QUALITY_PRESETS.high;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, preset0.pixelRatioCap));
-    this.renderer.setSize(w, h);
+    this._resizeRenderer(w, h);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.08;
@@ -1057,7 +1056,7 @@ export class DemoScene {
         this.vmCamera.aspect = w / h;
         this.vmCamera.updateProjectionMatrix();
       }
-      this.renderer.setSize(w, h);
+      this._resizeRenderer(w, h);
     };
     this._resizeObserver = new ResizeObserver(this._onResize);
     this._resizeObserver.observe(this.container);
@@ -1372,13 +1371,19 @@ export class DemoScene {
     this._applyQualityPreset(target);
   }
 
+  _resizeRenderer(w, h) {
+    const { pixelRatioCap, pixelBudget = Infinity } = QUALITY_PRESETS[this.activeQuality];
+    const ratio = Math.min(window.devicePixelRatio || 1, pixelRatioCap, Math.sqrt(pixelBudget / (w * h)));
+    if (this.renderer.getPixelRatio() !== ratio) this.renderer.setPixelRatio(ratio);
+    this.renderer.setSize(w, h);
+  }
+
   _applyQualityPreset(presetId) {
     const preset = QUALITY_PRESETS[presetId] || QUALITY_PRESETS.medium;
     this.activeQuality = preset.id;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, preset.pixelRatioCap));
     const w = Math.max(this.container.clientWidth || 1, 1);
     const h = Math.max(this.container.clientHeight || 1, 1);
-    this.renderer.setSize(w, h, false);
+    this._resizeRenderer(w, h);
 
     this.renderer.shadowMap.enabled = !!preset.shadowsEnabled;
     this.renderer.shadowMap.type = preset.softShadows ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
@@ -2973,7 +2978,7 @@ export class DemoScene {
           this.currentFps = 1000 / this.frameMs;
           this._frameSampleMs = 0;
           this._frameSampleCount = 0;
-          if (this.qualitySetting === 'auto' && this.roundReplay && this.currentFps < 50) {
+          if (this.qualitySetting === 'auto' && this.roundReplay && this.currentFps < 57) {
             if (++this._fpsLowStreak === 3) {
               const next = nextDowngradedQuality(this.activeQuality);
               if (next) this._applyQualityPreset(next);
@@ -3006,7 +3011,9 @@ export class DemoScene {
       if (this.skyDome) {
         this.skyDome.position.set(this.camera.position.x, (this.mapBounds?.min?.[1] ?? 0) - 400, this.camera.position.z);
       }
-      if (Math.abs(this.currentTick - this._lastShadowTick) >= (this.playing ? 2 : 0.05)) {
+      const tacticalOverview = this.cameraMode === 'tactical' && this.camera.position.distanceToSquared(this.orbit.target) > 1800 ** 2;
+      const shadowTickInterval = this.playing ? (this.roundReplay?.tick_rate || 64) / (tacticalOverview ? 10 : 32) : 0.05;
+      if (Math.abs(this.currentTick - this._lastShadowTick) >= shadowTickInterval) {
         this._lastShadowTick = this.currentTick;
         this.sunLight.shadow.needsUpdate = true;
         this.renderer.shadowMap.needsUpdate = true;
@@ -3033,7 +3040,7 @@ export class DemoScene {
         xray: this.xray,
         qualitySetting: this.qualitySetting,
         activeQuality: this.activeQuality,
-        fps: Math.round(this.currentFps),
+        fps: Number(this.currentFps.toFixed(this.currentFps < 10 ? 1 : 0)),
         frameMs: this.frameMs,
         rendererName: this.rendererName,
         softwareRenderer: this.softwareRenderer,

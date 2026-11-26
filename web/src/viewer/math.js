@@ -672,6 +672,7 @@ export const QUALITY_PRESETS = {
     softShadows: false,
     aoEnabled: true,
     pixelRatioCap: 1.25,
+    pixelBudget: 2250000,
     maxDetailLevel: 1,
   },
   low: {
@@ -682,6 +683,7 @@ export const QUALITY_PRESETS = {
     softShadows: false,
     aoEnabled: false,
     pixelRatioCap: 1.0,
+    pixelBudget: 1210000,
     maxDetailLevel: 0,
   },
 };

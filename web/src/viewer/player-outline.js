@@ -15,11 +15,15 @@ export class PlayerOutline {
     this.players = [];
     this.clearColor = new THREE.Color();
     this.drawingSize = new THREE.Vector2();
+    this.viewProjection = new THREE.Matrix4();
+    this.clipPoint = new THREE.Vector4();
+    this.playerBounds = new THREE.Vector4();
     this.edge = new THREE.ShaderMaterial({
       uniforms: {
         playerMask: { value: this.mask.texture },
         playerDepth: { value: this.mask.depthTexture },
         stepUv: { value: new THREE.Vector2() },
+        screenRegion: { value: new THREE.Vector4(0, 0, 1, 1) },
         ctColor: { value: new THREE.Color(ctColor) },
         tColor: { value: new THREE.Color(tColor) },
       },
@@ -28,10 +32,11 @@ export class PlayerOutline {
       transparent: true,
       toneMapped: false,
       vertexShader: `
+        uniform vec4 screenRegion;
         varying vec2 vUv;
         void main() {
-          vUv = uv;
-          gl_Position = vec4(position.xy, 0.0, 1.0);
+          vUv = mix(screenRegion.xy, screenRegion.zw, uv);
+          gl_Position = vec4(vUv * 2.0 - 1.0, 0.0, 1.0);
         }
       `,
       fragmentShader: `
@@ -99,11 +104,46 @@ export class PlayerOutline {
     this.players.length = 0;
   }
 
+  projectPlayerBounds(root) {
+    const { elements } = root.matrixWorld;
+    const { clipPoint, playerBounds, viewProjection } = this;
+    playerBounds.set(Infinity, Infinity, -Infinity, -Infinity);
+    let pointsAhead = 0;
+    for (let i = 0; i < 8; i++) {
+      clipPoint.set(
+        elements[12] + (i & 1 ? 64 : -64),
+        elements[13] + (i & 2 ? 110 : -32),
+        elements[14] + (i & 4 ? 64 : -64),
+        1,
+      ).applyMatrix4(viewProjection);
+      if (clipPoint.w <= 0) continue;
+      pointsAhead++;
+      const x = clipPoint.x / clipPoint.w * 0.5 + 0.5;
+      const y = clipPoint.y / clipPoint.w * 0.5 + 0.5;
+      playerBounds.x = Math.min(playerBounds.x, x);
+      playerBounds.y = Math.min(playerBounds.y, y);
+      playerBounds.z = Math.max(playerBounds.z, x);
+      playerBounds.w = Math.max(playerBounds.w, y);
+    }
+    if (pointsAhead === 0) return false;
+    if (pointsAhead < 8) playerBounds.set(0, 0, 1, 1);
+    return playerBounds.z >= 0 && playerBounds.w >= 0 && playerBounds.x <= 1 && playerBounds.y <= 1;
+  }
+
   render(camera) {
     let hasPlayers = false;
+    const screenRegion = this.edge.uniforms.screenRegion.value.set(1, 1, 0, 0);
+    this.viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     for (const { root, parts } of this.players) {
-      const outlined = root.visible && root.userData.outlined;
-      hasPlayers ||= outlined;
+      const outlined = root.visible && root.userData.outlined && this.projectPlayerBounds(root);
+      if (outlined) {
+        hasPlayers = true;
+        const { x, y, z, w } = this.playerBounds;
+        screenRegion.set(
+          Math.min(screenRegion.x, x), Math.min(screenRegion.y, y),
+          Math.max(screenRegion.z, z), Math.max(screenRegion.w, w),
+        );
+      }
       for (const { source, proxy } of parts) {
         proxy.visible = outlined && source.visible;
         if (!proxy.visible) continue;
@@ -119,7 +159,13 @@ export class PlayerOutline {
       mask.setSize(drawingSize.x, drawingSize.y);
     }
     const canvas = renderer.domElement;
-    this.edge.uniforms.stepUv.value.set(1.85 / canvas.clientWidth, 1.85 / canvas.clientHeight);
+    const pixelX = 1 / Math.max(1, canvas.clientWidth);
+    const pixelY = 1 / Math.max(1, canvas.clientHeight);
+    this.edge.uniforms.stepUv.value.set(1.85 * pixelX, 1.85 * pixelY);
+    screenRegion.set(
+      Math.max(0, screenRegion.x - 4 * pixelX), Math.max(0, screenRegion.y - 4 * pixelY),
+      Math.min(1, screenRegion.z + 4 * pixelX), Math.min(1, screenRegion.w + 4 * pixelY),
+    );
     renderer.getClearColor(this.clearColor);
     const clearAlpha = renderer.getClearAlpha();
     renderer.setRenderTarget(mask);
