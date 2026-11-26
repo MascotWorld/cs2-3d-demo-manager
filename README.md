@@ -41,6 +41,7 @@ The directory flags accept comma-separated paths. Pass `-geo-dirs /path/to/geome
 | `F` | Free camera. Use WASD, Space/E, C/Q, and Shift to move; drag to look. |
 | `1`–`9`, `0` | Switch to player slots 1–10 |
 | `X` | Toggle X-ray and player nameplates |
+| `F3` | Toggle renderer diagnostics: GPU, FPS, frame time, draw calls, and triangles |
 | `Tab` | Toggle the scoreboard |
 | `Space` | Play or pause outside free camera |
 | `←` / `→` | Step one tick outside free camera |

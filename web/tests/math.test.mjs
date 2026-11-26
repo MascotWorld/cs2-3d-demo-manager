@@ -12,6 +12,9 @@ import {
   parseCsmsh1,
   formatClock,
   povCameraFov,
+  cs2FovToVertical,
+  roundTeamsBySlot,
+  VIEWMODEL_FOV,
   weaponCategory,
   weaponNameToModelKey,
   grenadeTypeToModelKey,
@@ -154,7 +157,7 @@ test('formatClock formats minutes and seconds', () => {
 });
 
 test('povCameraFov, weaponCategory, and unpackUtilityCounts cover CS2 weapons and utility', () => {
-  assert.equal(povCameraFov('AK-47', 0), 88);
+  assert.equal(povCameraFov('AK-47', 0), 90);
   assert.equal(povCameraFov('AWP', 1), 40);
   assert.equal(povCameraFov('AWP', 2), 15);
   assert.equal(povCameraFov('AUG', 1), 45);
@@ -166,6 +169,23 @@ test('povCameraFov, weaponCategory, and unpackUtilityCounts cover CS2 weapons an
 
   const util = unpackUtilityCounts(102121); // 1 smoke, 2 flashes, 1 he, 2 mollies, 0 decoy, 1 c4
   assert.deepEqual(util, { smoke: 1, flash: 2, he: 1, molly: 2, decoy: 0, c4: 1 });
+});
+
+test('CS2 FOV uses a 4:3 reference rather than Three.js vertical degrees', () => {
+  for (const fov of [90, VIEWMODEL_FOV, povCameraFov('AWP', 1), povCameraFov('AWP', 2)]) {
+    const vertical = cs2FovToVertical(fov) * Math.PI / 180;
+    const atFourByThree = 2 * Math.atan(Math.tan(vertical / 2) * 4 / 3) * 180 / Math.PI;
+    assert.ok(Math.abs(atFourByThree - fov) < 1e-10);
+  }
+  const wideFov = 2 * Math.atan(Math.tan(cs2FovToVertical(90) * Math.PI / 360) * 16 / 9) * 180 / Math.PI;
+  assert.ok(wideFov > 106 && wideFov < 107);
+});
+
+test('round operator sides ignore inactive roster fallback and follow halftime switches', () => {
+  const firstHalf = [{ p: [[0, 2], [1, 2]] }, { p: [[1, 3], [1, 2]] }];
+  const secondHalf = [{ p: [[0, 3], [1, 3]] }, { p: [[1, 2], [1, 3]] }];
+  assert.deepEqual([...roundTeamsBySlot(firstHalf)].sort(), [[0, 3], [1, 2]]);
+  assert.deepEqual([...roundTeamsBySlot(secondHalf)].sort(), [[0, 2], [1, 3]]);
 });
 
 test('weaponNameToModelKey and grenadeTypeToModelKey resolve all CS2 equipment to real GLB keys', () => {
@@ -329,4 +349,3 @@ test('deoverlapScreenTags guarantees zero overlaps when 10 combat tags stack nea
     }
   }
 });
-

@@ -8,6 +8,12 @@ export const CROUCH_REDUCTION = (EYE_HEIGHT_STAND - EYE_HEIGHT_CROUCH) / EYE_HEI
 export const PLAYER_HEIGHT_STAND = 72;
 export const PLAYER_RADIUS = 16;
 export const INCHES_PER_METER = 1 / 0.0254;
+export const WORLD_FOV = 90;
+export const VIEWMODEL_FOV = 68;
+
+export function cs2FovToVertical(fov) {
+  return 2 * Math.atan(Math.tan(fov * Math.PI / 360) / (4 / 3)) * 180 / Math.PI;
+}
 
 export function cs2ToThree(x, y, z) {
   return [x, z, -y];
@@ -224,11 +230,26 @@ export function isScopedWeapon(weaponName = '') {
 }
 
 export function povCameraFov(weaponName = '', zoomLevel = 0) {
-  if (!zoomLevel || zoomLevel <= 0) return 88;
+  if (!zoomLevel || zoomLevel <= 0) return WORLD_FOV;
   if (isSniperWeapon(weaponName)) {
     return zoomLevel >= 2 ? 15 : 40;
   }
   return 45;
+}
+
+export function roundTeamsBySlot(frames) {
+  const teams = new Map();
+  let pending = frames.reduce((count, frame) => Math.max(count, frame.p.length), 0);
+  for (const { p } of frames) {
+    for (let slot = 0; slot < p.length; slot++) {
+      const player = p[slot];
+      if (player?.[0] !== 1 || (player[1] !== 2 && player[1] !== 3) || teams.has(slot)) continue;
+      teams.set(slot, player[1]);
+      pending--;
+    }
+    if (pending === 0) break;
+  }
+  return teams;
 }
 
 export function weaponCategory(weaponName = '') {
@@ -867,4 +888,3 @@ export function findNextAliveTeammate(players, deadSlot, deadTeam) {
   }
   return -1;
 }
-

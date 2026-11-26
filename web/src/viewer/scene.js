@@ -6,6 +6,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
+import { PlayerOutline } from './player-outline.js';
 import {
   cs2ToThree,
   cs2LookDirThree,
@@ -15,6 +16,10 @@ import {
   smokeEnvelope,
   parseCsmsh1,
   povCameraFov,
+  cs2FovToVertical,
+  roundTeamsBySlot,
+  WORLD_FOV,
+  VIEWMODEL_FOV,
   isSniperWeapon,
   weaponCategory,
   weaponNameToModelKey,
@@ -34,6 +39,7 @@ const CT_COLOR = 0x4ba3ff;
 const T_COLOR = 0xf5a623;
 const CT_XRAY = 0x6ec3ff;
 const T_XRAY = 0xffbd4a;
+const WORLD_FOV_VERTICAL = cs2FovToVertical(WORLD_FOV);
 
 // Sun direction shared between DirectionalLight shadow casting and atmospheric sky lighting
 const SUN_OFFSET = new THREE.Vector3(2100, 1950, 1450);
@@ -351,7 +357,25 @@ function makeContactShadowTexture() {
   return tex;
 }
 
-function makeVolumetricSmokeMaterial() {
+function makeSmokeNoiseTexture() {
+  const size = 32;
+  const data = new Uint8Array(size ** 3);
+  let state = 0x4a596a79;
+  for (let i = 0; i < data.length; i++) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    data[i] = state & 255;
+  }
+  const texture = new THREE.Data3DTexture(data, size, size, size);
+  texture.format = THREE.RedFormat;
+  texture.wrapS = texture.wrapT = texture.wrapR = THREE.RepeatWrapping;
+  texture.minFilter = texture.magFilter = THREE.LinearFilter;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function makeVolumetricSmokeMaterial(noiseTexture) {
   return new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
@@ -359,47 +383,35 @@ function makeVolumetricSmokeMaterial() {
     side: THREE.FrontSide,
     uniforms: {
       uOpacity: { value: 0.94 },
-      uSunDir: { value: SUN_DIR.clone() },
+      uSunLocal: { value: new THREE.Vector3() },
       uSeed: { value: 0.0 },
-      uInvModel: { value: new THREE.Matrix4() },
+      uCameraLocal: { value: new THREE.Vector3() },
       uInside: { value: 0.0 },
+      uNoise: { value: noiseTexture },
+      uNoiseSize: { value: noiseTexture.image.width },
     },
     vertexShader: `
-      varying vec3 vWorldPos;
       varying vec3 vLocalPos;
       void main() {
         vLocalPos = position;
-        vec4 worldPos = modelMatrix * vec4(position, 1.0);
-        vWorldPos = worldPos.xyz;
-        gl_Position = projectionMatrix * viewMatrix * worldPos;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }
     `,
     fragmentShader: `
       uniform float uOpacity;
-      uniform vec3 uSunDir;
+      uniform vec3 uSunLocal;
       uniform float uSeed;
-      uniform mat4 uInvModel;
+      uniform vec3 uCameraLocal;
       uniform float uInside;
-      varying vec3 vWorldPos;
+      uniform highp sampler3D uNoise;
+      uniform float uNoiseSize;
       varying vec3 vLocalPos;
-
-      float hash3(vec3 p) {
-        p = fract(p * 0.3183099 + vec3(0.11, 0.17, 0.23));
-        p *= 17.0;
-        return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
-      }
 
       float noise3(vec3 x) {
         vec3 i = floor(x);
         vec3 f = fract(x);
         f = f * f * (3.0 - 2.0 * f);
-        return mix(
-          mix(mix(hash3(i + vec3(0,0,0)), hash3(i + vec3(1,0,0)), f.x),
-              mix(hash3(i + vec3(0,1,0)), hash3(i + vec3(1,1,0)), f.x), f.y),
-          mix(mix(hash3(i + vec3(0,0,1)), hash3(i + vec3(1,0,1)), f.x),
-              mix(hash3(i + vec3(0,1,1)), hash3(i + vec3(1,1,1)), f.x), f.y),
-          f.z
-        );
+        return texture(uNoise, (i + f + 0.5) / uNoiseSize).r;
       }
 
       float fbm(vec3 p) {
@@ -414,7 +426,7 @@ function makeVolumetricSmokeMaterial() {
       }
 
       void main() {
-        vec3 camLocal = (uInvModel * vec4(cameraPosition, 1.0)).xyz;
+        vec3 camLocal = uCameraLocal;
         vec3 rd = normalize(vLocalPos - camLocal);
 
         float t0 = 0.0;
@@ -433,7 +445,6 @@ function makeVolumetricSmokeMaterial() {
         }
         if (t1 <= 0.005) discard;
 
-        vec3 sunLocal = normalize(mat3(uInvModel) * uSunDir);
         vec3 seedVec = vec3(uSeed * 2.13, uSeed * 1.47, uSeed * 3.09);
 
         float accumAlpha = 0.0;
@@ -452,9 +463,9 @@ function makeVolumetricSmokeMaterial() {
           float dist = length(q) + n * 0.19;
 
           // Dense opaque CS2 smoke core with smooth outer feather
-          float density = smoothstep(0.95, 0.30, dist);
+          float density = 1.0 - smoothstep(0.30, 0.95, dist);
           if (density > 0.005) {
-            float sunSample = clamp(dot(normalize(p + vec3(0.0, 0.01, 0.0)), sunLocal) * 0.5 + 0.5, 0.0, 1.0);
+            float sunSample = clamp(dot(normalize(p + vec3(0.0, 0.01, 0.0)), uSunLocal) * 0.5 + 0.5, 0.0, 1.0);
             float heightGrad = clamp(p.y * 0.5 + 0.55, 0.0, 1.0);
             vec3 shadowGrey = vec3(0.47, 0.50, 0.55);
             vec3 litGrey = vec3(0.84, 0.87, 0.90);
@@ -622,23 +633,27 @@ export class DemoScene {
     this.camera.position.set(0, 1200, 1200);
     this.scene.add(this.camera);
 
-    // Separate depth-cleared CS2 viewmodel pass (prevents weapon/arms clipping into walls + matches CS2 viewmodel_fov 66)
-    this.vmCamera = new THREE.PerspectiveCamera(66, w / h, 0.5, 220);
+    this.vmCamera = new THREE.PerspectiveCamera(cs2FovToVertical(VIEWMODEL_FOV), w / h, 0.5, 220);
     this.vmScene = new THREE.Scene();
 
     this.qualitySetting = options.quality || 'auto'; // 'auto' | 'high' | 'medium' | 'low'
-    this.activeQuality = this.qualitySetting === 'auto' ? 'high' : this.qualitySetting;
-    this._fpsWindow = [];
-    this._fpsLastTs = 0;
+    this._frameSampleMs = 0;
+    this._frameSampleCount = 0;
     this._fpsLowStreak = 0;
-    this.currentFps = 60;
+    this.currentFps = 0;
+    this.frameMs = 0;
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
-      stencil: true,
       powerPreference: 'high-performance',
       preserveDrawingBuffer: false,
     });
+    const gl = this.renderer.getContext();
+    const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+    this.rendererName = (debugInfo && gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL)) ||
+      gl.getParameter(gl.RENDERER) || 'Unknown WebGL renderer';
+    this.softwareRenderer = /swiftshader|llvmpipe|softpipe|software (renderer|rasterizer)|microsoft basic render|\bwarp\b/i.test(this.rendererName);
+    this.activeQuality = this.qualitySetting === 'auto' ? (this.softwareRenderer ? 'low' : 'high') : this.qualitySetting;
     const preset0 = QUALITY_PRESETS[this.activeQuality] || QUALITY_PRESETS.high;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, preset0.pixelRatioCap));
     this.renderer.setSize(w, h);
@@ -650,7 +665,9 @@ export class DemoScene {
     this.renderer.shadowMap.autoUpdate = false;
     this.renderer.shadowMap.needsUpdate = true;
     this.renderer.autoClear = false;
+    this.renderer.info.autoReset = false;
     this.container.appendChild(this.renderer.domElement);
+    this.playerOutline = new PlayerOutline(this.renderer, CT_XRAY, T_XRAY);
 
     // Real CS2 skybox texture (equirectangular from materials/skybox/) with Preetham Sky fallback
     this.skyDome = makeAtmosphericSky();
@@ -842,7 +859,6 @@ export class DemoScene {
       triCount: 0,
       source: 'none',
     };
-    this.mapMaterials = [];
 
     // Free cam state
     this.freePos = new THREE.Vector3(0, 400, 600);
@@ -856,6 +872,7 @@ export class DemoScene {
     this.roundReplay = null;
     this.playersMeta = [];
     this.metaBySlot = new Map();
+    this.roundTeams = new Map();
     this.currentTick = 0;
     this.playing = false;
     this.playbackSpeed = 1;
@@ -1024,6 +1041,13 @@ export class DemoScene {
   }
 
   _bindEvents() {
+    this._onVisibilityChange = () => {
+      this.lastRafTs = 0;
+      this._frameSampleMs = 0;
+      this._frameSampleCount = 0;
+      this._fpsLowStreak = 0;
+    };
+    document.addEventListener('visibilitychange', this._onVisibilityChange);
     this._onResize = () => {
       const w = Math.max(this.container.clientWidth || 1, 1);
       const h = Math.max(this.container.clientHeight || 1, 1);
@@ -1090,6 +1114,7 @@ export class DemoScene {
 
   dispose() {
     if (this._rafId) cancelAnimationFrame(this._rafId);
+    document.removeEventListener('visibilitychange', this._onVisibilityChange);
     this._resizeObserver.disconnect();
     const dom = this.renderer.domElement;
     dom.removeEventListener('mousedown', this._onMouseDown);
@@ -1101,6 +1126,8 @@ export class DemoScene {
     this.orbit.dispose();
     if (this.skyboxTexture) this.skyboxTexture.dispose();
     if (this.envRenderTarget) this.envRenderTarget.dispose();
+    this._smokeNoiseTexture?.dispose();
+    this.playerOutline.dispose();
     this.renderer.dispose();
     if (dom.parentNode) dom.parentNode.removeChild(dom);
     if (typeof window !== 'undefined') {
@@ -1236,7 +1263,8 @@ export class DemoScene {
   _getSmokePoolItem(idx) {
     while (this._smokePool.length <= idx) {
       const cluster = new THREE.Group();
-      const smokeMat = makeVolumetricSmokeMaterial();
+      this._smokeNoiseTexture ??= makeSmokeNoiseTexture();
+      const smokeMat = makeVolumetricSmokeMaterial(this._smokeNoiseTexture);
       smokeMat.uniforms.uSeed.value = (idx + 1) * 1.37;
       const volumeMesh = new THREE.Mesh(this._smokeSphereGeo, smokeMat);
       volumeMesh.renderOrder = 8;
@@ -1337,8 +1365,9 @@ export class DemoScene {
   setQuality(mode = 'auto') {
     const valid = mode === 'auto' || QUALITY_PRESETS[mode] ? mode : 'auto';
     this.qualitySetting = valid;
-    const target = valid === 'auto' ? 'high' : valid;
-    this._fpsWindow.length = 0;
+    const target = valid === 'auto' ? (this.softwareRenderer ? 'low' : 'high') : valid;
+    this._frameSampleMs = 0;
+    this._frameSampleCount = 0;
     this._fpsLowStreak = 0;
     this._applyQualityPreset(target);
   }
@@ -1405,7 +1434,6 @@ export class DemoScene {
       castShadow = true,
       receiveShadow = true,
       isOperatorOrWeapon = true,
-      writeStencil = false,
     } = {}
   ) {
     root.traverse((obj) => {
@@ -1432,15 +1460,6 @@ export class DemoScene {
       const mats = obj.material ? (Array.isArray(obj.material) ? obj.material : [obj.material]) : [];
       for (const m of mats) {
         fixSource2OrmMaterial(m, { isOperatorOrWeapon });
-        if (writeStencil && m) {
-          m.stencilWrite = true;
-          m.stencilWriteMask = 0xff;
-          m.stencilRef = 1;
-          m.stencilFunc = THREE.AlwaysStencilFunc;
-          m.stencilFail = THREE.KeepStencilOp;
-          m.stencilZFail = THREE.KeepStencilOp;
-          m.stencilZPass = THREE.ReplaceStencilOp;
-        }
       }
     });
   }
@@ -1456,7 +1475,6 @@ export class DemoScene {
         }
       });
     }
-    this.mapMaterials = [];
 
     const skyboxPromise = this.setMapSkybox(skyboxUrl);
     const parsedRef = meshBuffer ? parseCsmsh1(meshBuffer) : null;
@@ -1611,10 +1629,7 @@ export class DemoScene {
                   metalness: 0.06,
                   side: THREE.DoubleSide,
                 });
-                archMat.userData.origTransparent = false;
-                archMat.userData.origOpacity = 1.0;
                 dedupedMatCache.set(archKey, archMat);
-                this.mapMaterials.push(archMat);
               }
               outMats.push(archMat);
               m.dispose();
@@ -1622,8 +1637,6 @@ export class DemoScene {
               const origDoubleSided = m.side === THREE.DoubleSide;
               fixSource2OrmMaterial(m, { isOperatorOrWeapon: false });
               if (m.transparent) anyTransparent = true;
-              m.userData.origTransparent = !!m.transparent;
-              m.userData.origOpacity = m.opacity ?? 1.0;
               m.userData.origDoubleSided = origDoubleSided;
               m.side = origDoubleSided ? THREE.DoubleSide : THREE.FrontSide;
               m.vertexColors = false;
@@ -1633,7 +1646,6 @@ export class DemoScene {
               if (!sharedMat) {
                 sharedMat = m;
                 dedupedMatCache.set(sig, sharedMat);
-                this.mapMaterials.push(sharedMat);
               } else {
                 m.dispose();
               }
@@ -1750,7 +1762,6 @@ export class DemoScene {
         };
         this.gridHelper.visible = false;
         this.groundBackdrop.visible = false;
-        this._applyXrayToMap();
         this._applyQualityPreset(this.activeQuality);
         this.resetTacticalCamera();
         this._updateSunShadowFrustum(true);
@@ -1774,7 +1785,6 @@ export class DemoScene {
         metalness: 0.08,
         side: THREE.DoubleSide,
       });
-      this.mapMaterials.push(mat);
 
       const mesh = new THREE.Mesh(geo, mat);
       this.mapGroup.add(mesh);
@@ -1797,7 +1807,6 @@ export class DemoScene {
       this.gridHelper.visible = false;
       this.groundBackdrop.visible = !this.skyboxTexture;
       this.groundBackdrop.position.y = parsedRef.minThree[1] - 6;
-      this._applyXrayToMap();
       this.resetTacticalCamera();
       await skyboxPromise;
       return this.mapBounds;
@@ -1843,7 +1852,7 @@ export class DemoScene {
 
     const p = this._loadGlb(`/api/assets/weapons/${encodeURIComponent(key)}`)
       .then((gltf) => {
-        this._configurePbrObject(gltf.scene, { writeStencil: true });
+        this._configurePbrObject(gltf.scene);
         gltf.scene.updateMatrixWorld(true);
         let gripOffset = new THREE.Vector3(0, 0, 0);
         const handBone = gltf.scene.getObjectByName('ag1_hand_r') || gltf.scene.getObjectByName('weapon');
@@ -2046,7 +2055,6 @@ export class DemoScene {
         castShadow: false,
         receiveShadow: false,
         isOperatorOrWeapon: true,
-        writeStencil: false,
       });
       clone.scale.setScalar(INCHES_PER_METER);
       clone.rotation.y = Math.PI;
@@ -2242,6 +2250,10 @@ export class DemoScene {
   }
 
   setRoundData(roundReplay, playersMeta) {
+    this.lastRafTs = 0;
+    this._frameSampleMs = 0;
+    this._frameSampleCount = 0;
+    this._fpsLowStreak = 0;
     this.roundReplay = roundReplay;
     this.playersMeta = playersMeta || [];
     this.metaBySlot = new Map();
@@ -2250,6 +2262,7 @@ export class DemoScene {
     }
     this.playableBounds = null;
     const frames = roundReplay?.frames || [];
+    this.roundTeams = roundTeamsBySlot(frames);
     if (frames.length > 0) {
       let minX = Infinity, minY = Infinity, minZ = Infinity;
       let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
@@ -2299,10 +2312,10 @@ export class DemoScene {
     if (this.povFillLight) this.povFillLight.visible = mode === 'pov';
     if (mode !== 'pov') {
       this.viewModelGroup.visible = false;
-      this.camera.fov = 72;
+      this.camera.fov = mode === 'tactical' ? 72 : WORLD_FOV_VERTICAL;
       this.camera.updateProjectionMatrix();
     } else {
-      this.camera.fov = 88;
+      this.camera.fov = WORLD_FOV_VERTICAL;
       this.camera.updateProjectionMatrix();
     }
     if (mode === 'free') {
@@ -2392,34 +2405,11 @@ export class DemoScene {
 
   setXray(enabled) {
     this.xray = !!enabled;
-    this._applyXrayToMap();
-    for (const rig of this.playerRigs) {
-      if (rig?.xrayMesh) {
-        rig.xrayMesh.visible = this.xray;
-      }
-    }
   }
 
   setShowTracers(enabled) {
     this.showTracers = !!enabled;
     this.tracersGroup.visible = this.showTracers;
-  }
-
-  _applyXrayToMap() {
-    const isCustom = this.mapBounds.source === 'custom_glb';
-    for (const mat of this.mapMaterials) {
-      if (isCustom) {
-        mat.transparent = !!mat.userData.origTransparent;
-        mat.opacity = mat.userData.origOpacity ?? 1.0;
-      } else if (this.xray) {
-        mat.transparent = true;
-        mat.opacity = 0.9;
-      } else {
-        mat.transparent = false;
-        mat.opacity = 1.0;
-      }
-      mat.needsUpdate = true;
-    }
   }
 
   _poseOperatorSkeleton(
@@ -2450,6 +2440,13 @@ export class DemoScene {
   ) {
     const b = rig.bones;
     if (!b) return;
+    if (rig.aimPoseApplied) {
+      for (const { bone, position, quaternion } of rig.baseAimPose) {
+        bone.position.copy(position);
+        bone.quaternion.copy(quaternion);
+      }
+      rig.aimPoseApplied = false;
+    }
     const q = _ikQ;
     const e = (rig._tmpEuler || (rig._tmpEuler = new THREE.Euler()));
 
@@ -2503,6 +2500,14 @@ export class DemoScene {
         // Apply proportional CS2 aim pitch around bodyGroup +X axis so torso, head, arms, and wpn pitch in sync
         const pitchRad = Math.max(-1.05, Math.min(1.05, (pitchDeg * Math.PI) / 180));
         if (Math.abs(pitchRad) > 0.005) {
+          rig.baseAimPose ??= [b.spine_1, b.spine_2, b.head_0, b.wpnPivot].filter(Boolean).map((bone) => ({
+            bone, position: new THREE.Vector3(), quaternion: new THREE.Quaternion(),
+          }));
+          for (const { bone, position, quaternion } of rig.baseAimPose) {
+            position.copy(bone.position);
+            quaternion.copy(bone.quaternion);
+          }
+          rig.aimPoseApplied = true;
           rig.bodyGroup.updateMatrixWorld(true);
           const rigQ = _ikRootQ;
           rig.bodyGroup.getWorldQuaternion(rigQ);
@@ -2723,6 +2728,7 @@ export class DemoScene {
   }
 
   _rebuildPlayerRigs() {
+    this.playerOutline.clear();
     while (this.playersGroup.children.length > 0) {
       this.playersGroup.children.pop();
     }
@@ -2737,26 +2743,26 @@ export class DemoScene {
       const meta = this.metaBySlot.get(slot) || {
         slot,
         name: `Player ${slot + 1}`,
-        team: slot < 5 ? 3 : 2,
       };
+      const team = this.roundTeams.get(slot) || meta.start_team || meta.team || (slot < 5 ? 3 : 2);
       const root = new THREE.Group();
 
       const solidMat = new THREE.MeshStandardMaterial({
-        color: meta.team === 3 ? CT_COLOR : T_COLOR,
+        color: team === 3 ? CT_COLOR : T_COLOR,
         roughness: 0.42,
         metalness: 0.15,
       });
 
       const bodyGroup = new THREE.Group();
       const template =
-        this.customPlayerTemplate || (meta.team === 3 ? this.ctPlayerTemplate : this.tPlayerTemplate);
+        this.customPlayerTemplate || (team === 3 ? this.ctPlayerTemplate : this.tPlayerTemplate);
       let bones = null;
       let defuseKitMesh = null;
       let isRealOperator = false;
 
       if (template) {
         const clone = SkeletonUtils.clone(template);
-        this._configurePbrObject(clone, { hideFirstPerson: true, showDefuser: false, writeStencil: true });
+        this._configurePbrObject(clone, { hideFirstPerson: true, showDefuser: false });
 
         if (!this.customPlayerTemplate) {
           isRealOperator = true;
@@ -2814,6 +2820,7 @@ export class DemoScene {
         bodyGroup.add(headGroup);
         root.userData.headGroup = headGroup;
       }
+      this.playerOutline.add(root, bodyGroup, team, defuseKitMesh);
 
       // World weapon socket synced to operator's live right hand position
       const worldWeaponGroup = new THREE.Group();
@@ -2836,7 +2843,7 @@ export class DemoScene {
 
       // Subtle team foot ring for instant CT/T identification from Tactical view
       const footRingMat = new THREE.MeshBasicMaterial({
-        color: meta.team === 3 ? CT_COLOR : T_COLOR,
+        color: team === 3 ? CT_COLOR : T_COLOR,
         transparent: true,
         opacity: 0.68,
         side: THREE.DoubleSide,
@@ -2869,31 +2876,6 @@ export class DemoScene {
 
       root.add(bodyGroup);
 
-      // Occluded-only CS2 X-Ray silhouette (stencilWrite=true enables GL_STENCIL_TEST while mask=0x00 keeps stencil untouched)
-      const xrayMat = new THREE.MeshBasicMaterial({
-        color: meta.team === 3 ? CT_XRAY : T_XRAY,
-        transparent: true,
-        opacity: 0.58,
-        depthTest: true,
-        depthFunc: THREE.GreaterDepth,
-        depthWrite: false,
-        stencilWrite: true,
-        stencilWriteMask: 0x00,
-        stencilRef: 1,
-        stencilFunc: THREE.NotEqualStencilFunc,
-        stencilFail: THREE.KeepStencilOp,
-        stencilZFail: THREE.KeepStencilOp,
-        stencilZPass: THREE.KeepStencilOp,
-      });
-      const xrayMesh = new THREE.Mesh(
-        new THREE.CapsuleGeometry(PLAYER_RADIUS * 0.72, 34, 4, 8),
-        xrayMat
-      );
-      xrayMesh.position.y = 35;
-      xrayMesh.renderOrder = 20;
-      xrayMesh.visible = this.xray;
-      root.add(xrayMesh);
-
       this.playersGroup.add(root);
 
       let labelEl = null;
@@ -2907,6 +2889,7 @@ export class DemoScene {
       const rig = {
         slot,
         meta,
+        team,
         root,
         bodyGroup,
         worldWeaponGroup,
@@ -2918,8 +2901,6 @@ export class DemoScene {
         footRing,
         footRingMat,
         solidMat,
-        xrayMesh,
-        xrayMat,
         labelEl,
         bones,
         isRealOperator,
@@ -2980,27 +2961,23 @@ export class DemoScene {
   _startLoop() {
     const tickLoop = (now) => {
       this._rafId = requestAnimationFrame(tickLoop);
-      const rawDtMs = this.lastRafTs ? now - this.lastRafTs : 16.7;
-      const dt = this.lastRafTs ? Math.min(0.08, rawDtMs / 1000) : 0.016;
+      const rawDtMs = this.lastRafTs ? now - this.lastRafTs : 0;
+      const dt = rawDtMs ? Math.min(0.08, rawDtMs / 1000) : 0.016;
       this.lastRafTs = now;
 
-      // Rolling FPS tracker + automatic quality downgrade (< 30 FPS sustained) when in Auto mode
-      if (rawDtMs > 1 && rawDtMs < 250 && !document.hidden) {
-        this._fpsWindow.push(1000 / rawDtMs);
-        if (this._fpsWindow.length > 36) this._fpsWindow.shift();
-        if (this._fpsWindow.length >= 24 && now - this._fpsLastTs > 600) {
-          this._fpsLastTs = now;
-          const avgFps = this._fpsWindow.reduce((a, b) => a + b, 0) / this._fpsWindow.length;
-          this.currentFps = avgFps;
-          if (this.qualitySetting === 'auto' && avgFps < 30) {
-            this._fpsLowStreak++;
-            if (this._fpsLowStreak >= 2) {
-              const nextQ = nextDowngradedQuality(this.activeQuality);
-              if (nextQ) {
-                this._fpsLowStreak = 0;
-                this._fpsWindow.length = 0;
-                this._applyQualityPreset(nextQ);
-              }
+      if (rawDtMs > 0 && !document.hidden) {
+        this._frameSampleMs += rawDtMs;
+        this._frameSampleCount++;
+        if (this._frameSampleMs >= 600) {
+          this.frameMs = this._frameSampleMs / this._frameSampleCount;
+          this.currentFps = 1000 / this.frameMs;
+          this._frameSampleMs = 0;
+          this._frameSampleCount = 0;
+          if (this.qualitySetting === 'auto' && this.roundReplay && this.currentFps < 50) {
+            if (++this._fpsLowStreak === 3) {
+              const next = nextDowngradedQuality(this.activeQuality);
+              if (next) this._applyQualityPreset(next);
+              this._fpsLowStreak = 0;
             }
           } else {
             this._fpsLowStreak = 0;
@@ -3029,14 +3006,16 @@ export class DemoScene {
       if (this.skyDome) {
         this.skyDome.position.set(this.camera.position.x, (this.mapBounds?.min?.[1] ?? 0) - 400, this.camera.position.z);
       }
-      if (Math.abs(this.currentTick - this._lastShadowTick) > 0.05) {
+      if (Math.abs(this.currentTick - this._lastShadowTick) >= (this.playing ? 2 : 0.05)) {
         this._lastShadowTick = this.currentTick;
         this.sunLight.shadow.needsUpdate = true;
         this.renderer.shadowMap.needsUpdate = true;
       }
       this._updateSunShadowFrustum();
+      this.renderer.info.reset();
       this.renderer.clear();
       this.renderer.render(this.scene, this.camera);
+      if (this.xray) this.playerOutline.render(this.camera);
       if (this.cameraMode === 'pov' && this.viewModelGroup.visible) {
         if (this.vmSunLight) {
           const camInvQ = (this._tmpCamInvQ || (this._tmpCamInvQ = new THREE.Quaternion())).copy(this.camera.quaternion).invert();
@@ -3055,6 +3034,9 @@ export class DemoScene {
         qualitySetting: this.qualitySetting,
         activeQuality: this.activeQuality,
         fps: Math.round(this.currentFps),
+        frameMs: this.frameMs,
+        rendererName: this.rendererName,
+        softwareRenderer: this.softwareRenderer,
         drawCalls: this.renderer.info.render.calls,
         triangles: this.renderer.info.render.triangles,
         currentTick: Math.round(this.currentTick),
@@ -3075,6 +3057,7 @@ export class DemoScene {
           Math.round(this.camera.position.z),
         ],
         cameraFov: Math.round(this.camera.fov),
+        viewModelFov: this.vmCamera.fov,
         alivePlayers: snapshot ? snapshot.players.filter((p) => p && p[0] === 1).length : 0,
         activeSmokes: this._activeSmokeCount,
         activeGrenades: this._activeGrenadeCount,
@@ -3240,6 +3223,8 @@ export class DemoScene {
             this.cameraMode = 'free';
             this.orbit.enabled = false;
             this.viewModelGroup.visible = false;
+            this.camera.fov = WORLD_FOV_VERTICAL;
+            this.camera.updateProjectionMatrix();
             if (this.povFillLight) this.povFillLight.visible = false;
             this.freePos.copy(this.camera.position);
             const dir = new THREE.Vector3();
@@ -3259,6 +3244,7 @@ export class DemoScene {
       const p = snap.players[slot];
       const deathEvent = deathBySlot.get(slot);
       const hideForPov = this.cameraMode === 'pov' && !deathCamActive && slot === observedSlot;
+      rig.root.userData.outlined = p?.[0] === 1 && !hideForPov;
 
       if (!p || p[0] !== 1) {
         if (deathEvent && rig.isRealOperator && deathEvent.victim_pos) {
@@ -3272,7 +3258,7 @@ export class DemoScene {
             deadElapsedSec,
             weaponKey: rig.currentWorldWeaponKey || 'ak47',
             weaponCat: weaponCategory(rig.currentWorldWeaponKey || ''),
-            team: rig.meta?.team || 3,
+            team: rig.team,
           });
           // Drop last held weapon onto the ground beside the fallen operator
           if (!hideForPov && rig.currentWorldWeaponKey && rig.worldWeaponGroup.children.length > 0) {
@@ -3287,7 +3273,6 @@ export class DemoScene {
           rig.c4BackMesh.visible = false;
           rig.footRing.visible = false;
           rig.contactShadow.visible = !hideForPov;
-          rig.xrayMesh.visible = false;
           if (rig.defuseKitMesh) rig.defuseKitMesh.visible = false;
           if (rig.labelEl) rig.labelEl.style.display = 'none';
         } else {
@@ -3322,9 +3307,9 @@ export class DemoScene {
       rig.lastPos = [tx, ty, tz];
 
       rig.root.position.set(tx, ty, tz);
+      rig.root.rotation.y = yaw * Math.PI / 180 - Math.PI / 2;
       rig.footRing.visible = !hideForPov;
       rig.contactShadow.visible = !hideForPov;
-      rig.xrayMesh.visible = !hideForPov && this.xray && this.cameraMode !== 'pov';
       rig.worldWeaponGroup.visible = !hideForPov;
 
       const wIdx = p[13] ?? -1;
@@ -3370,17 +3355,12 @@ export class DemoScene {
       } else {
         rig.bodyGroup.scale.set(1, scaleY, 1);
       }
-      rig.xrayMesh.scale.set(1, scaleY, 1);
       rig.c4BackMesh.visible = slot === carrierSlot;
 
       const color = team === 3 ? CT_COLOR : T_COLOR;
-      const xrayColor = team === 3 ? CT_XRAY : T_XRAY;
       rig.solidMat.color.setHex(color);
-      rig.xrayMat.color.setHex(xrayColor);
       rig.footRingMat.color.setHex(color);
 
-      const yawRad = (yaw * Math.PI) / 180;
-      rig.root.rotation.y = yawRad - Math.PI / 2;
       if (rig.root.userData.headGroup) {
         rig.root.userData.headGroup.rotation.x = -(pitch * Math.PI) / 180;
       }
@@ -3477,8 +3457,8 @@ export class DemoScene {
     if (this.cameraMode === 'pov') {
       if (deathCamActive && deathCamPos) {
         this.viewModelGroup.visible = false;
-        if (Math.abs(this.camera.fov - 84) > 0.5) {
-          this.camera.fov = 84;
+        if (this.camera.fov !== WORLD_FOV_VERTICAL) {
+          this.camera.fov = WORLD_FOV_VERTICAL;
           this.camera.updateProjectionMatrix();
         }
         const [vx, vy, vz] = cs2ToThree(deathCamPos[0], deathCamPos[1], deathCamPos[2]);
@@ -3520,8 +3500,8 @@ export class DemoScene {
         const wIdx = p[13] ?? -1;
         const weaponName = wIdx >= 0 && weapons[wIdx] ? weapons[wIdx] : '';
         const zoomLevel = p[10] || 0;
-        const desiredFov = povCameraFov(weaponName, zoomLevel);
-        if (Math.abs(this.camera.fov - desiredFov) > 0.5) {
+        const desiredFov = cs2FovToVertical(povCameraFov(weaponName, zoomLevel));
+        if (this.camera.fov !== desiredFov) {
           this.camera.fov = desiredFov;
           this.camera.updateProjectionMatrix();
         }
@@ -3741,8 +3721,10 @@ export class DemoScene {
       item.cluster.scale.set(144 * env.scale, 122 * env.scale, 144 * env.scale);
       item.cluster.updateMatrixWorld(true);
       item.smokeMat.uniforms.uOpacity.value = Math.min(0.97, env.opacity * 1.38);
-      item.smokeMat.uniforms.uInvModel.value.copy(item.volumeMesh.matrixWorld).invert();
-      const inside = this.camera.position.distanceTo(item.cluster.position) < 152 * env.scale;
+      const smokeInverse = (this._smokeInverse ??= new THREE.Matrix4()).copy(item.volumeMesh.matrixWorld).invert();
+      const cameraLocal = item.smokeMat.uniforms.uCameraLocal.value.copy(this.camera.position).applyMatrix4(smokeInverse);
+      item.smokeMat.uniforms.uSunLocal.value.copy(SUN_DIR).transformDirection(smokeInverse);
+      const inside = cameraLocal.lengthSq() < 1;
       item.smokeMat.uniforms.uInside.value = inside ? 1.0 : 0.0;
       const wantSide = inside ? THREE.BackSide : THREE.FrontSide;
       if (item.smokeMat.side !== wantSide) {

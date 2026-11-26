@@ -6,6 +6,7 @@ import os from 'node:os';
 import net from 'node:net';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { cs2FovToVertical, povCameraFov, roundTeamsBySlot, VIEWMODEL_FOV } from '../../web/src/viewer/math.js';
 
 const require = createRequire(new URL('../../web/package.json', import.meta.url));
 const { chromium } = require('playwright');
@@ -94,6 +95,103 @@ async function assertTagsAndHudClean(page, label) {
   assert.deepEqual(check.tagOverlaps, [], `${label} tag/HUD overlaps: ${check.tagOverlaps.join(', ')}`);
 }
 
+async function assertOperatorsAcrossHalftime(page, baseUrl, demoId) {
+  const { rounds } = await (await fetch(`${baseUrl}/api/demos/${demoId}`)).json();
+  const first = await (await fetch(`${baseUrl}/api/demos/${demoId}/rounds/${rounds[0].round_number}`)).json();
+  const firstSides = roundTeamsBySlot(first.frames);
+  let swapped;
+  for (const { round_number } of rounds.filter((r) => r.round_number > 11)) {
+    const round = await (await fetch(`${baseUrl}/api/demos/${demoId}/rounds/${round_number}`)).json();
+    const sides = roundTeamsBySlot(round.frames);
+    if ([...firstSides].filter(([slot, team]) => sides.has(slot) && sides.get(slot) !== team).length >= 5) {
+      swapped = { number: round_number, sides };
+      break;
+    }
+  }
+  assert.ok(swapped, 'Replay fixture must include a halftime side swap');
+  for (const [number, sides] of [[rounds[0].round_number, firstSides], [swapped.number, swapped.sides]]) {
+    await page.click(`.round-pill[data-round="${number}"]`);
+    await page.waitForFunction((n) => window.__CS2_SCENE__?.roundReplay?.summary?.round_number === n, number);
+    const operators = await page.evaluate(() => window.__CS2_SCENE__.playerRigs.map((rig) => {
+      let model = '';
+      rig.bodyGroup.children[0]?.traverse(({ name }) => {
+        if (name.includes('ctm_sas')) model = 'ct';
+        if (name.includes('tm_phoenix')) model = 't';
+      });
+      return [rig.slot, model];
+    }));
+    for (const [slot, model] of operators) {
+      if (sides.has(slot)) assert.equal(model, sides.get(slot) === 3 ? 'ct' : 't', `Round ${number}, slot ${slot}`);
+    }
+  }
+  await page.click(`.round-pill[data-round="${rounds[0].round_number}"]`);
+  await page.waitForFunction((n) => window.__CS2_SCENE__?.roundReplay?.summary?.round_number === n, rounds[0].round_number);
+}
+
+async function assertOccludedOutlinePixels(page) {
+  const pixels = await page.evaluate(() => {
+    const view = window.__CS2_SCENE__;
+    const renderer = new view.renderer.constructor({ preserveDrawingBuffer: true });
+    renderer.setSize(160, 160);
+    renderer.autoClear = false;
+    renderer.domElement.style.cssText = 'position:fixed; inset:0 auto auto 0; width:160px; height:160px';
+    document.body.append(renderer.domElement);
+    const outline = new view.playerOutline.constructor(renderer, 0x6ec3ff, 0xffbd4a);
+    const scene = new view.scene.constructor();
+    const camera = new view.camera.constructor(60, 1, 0.1, 100);
+    renderer.setClearColor(0x161a21);
+    const plane = (width, height, color) => new outline.quad.constructor(
+      new outline.quad.geometry.constructor(width, height),
+      new outline.ctMask.constructor({ color }),
+    );
+    const wall = plane(3.2, 2.1, 0x4b5157);
+    wall.position.z = -3;
+    scene.add(wall);
+    for (const [team, x] of [[3, -0.8], [2, 0.8]]) {
+      const actor = new view.playersGroup.constructor();
+      actor.userData.outlined = true;
+      const body = plane(0.65, 0.95, 0x888888);
+      actor.position.set(x, 0, -4);
+      actor.add(body);
+      scene.add(actor);
+      outline.add(actor, actor, team);
+    }
+    const render = (drawOutline) => {
+      renderer.clear();
+      renderer.render(scene, camera);
+      if (drawOutline) outline.render(camera);
+      const gl = renderer.getContext();
+      const data = new Uint8Array(160 * 160 * 4);
+      gl.readPixels(0, 0, 160, 160, gl.RGBA, gl.UNSIGNED_BYTE, data);
+      return data;
+    };
+    const behindWall = render(false);
+    const outlined = render(true);
+    wall.visible = false;
+    const visible = render(false);
+    const visibleWithXray = render(true);
+    let ct = 0, t = 0, visibleDelta = 0;
+    for (let i = 0; i < outlined.length; i += 4) {
+      if (outlined[i] !== behindWall[i]) {
+        if (outlined[i + 2] - outlined[i] > 60) ct++;
+        if (outlined[i] - outlined[i + 2] > 80) t++;
+      }
+      if (visible[i] !== visibleWithXray[i] || visible[i + 2] !== visibleWithXray[i + 2]) visibleDelta++;
+    }
+    const centersUntouched = [52, 108].every((x) => {
+      const i = (80 * 160 + x) * 4;
+      return behindWall[i] === outlined[i] && behindWall[i + 2] === outlined[i + 2];
+    });
+    outline.dispose();
+    renderer.dispose();
+    renderer.domElement.remove();
+    return { ct, t, visibleDelta, centersUntouched };
+  });
+  assert.ok(pixels.ct > 25 && pixels.t > 25, `Expected both colors through walls: ${JSON.stringify(pixels)}`);
+  assert.equal(pixels.visibleDelta, 0, 'X-ray must not change unobstructed operators');
+  assert.ok(pixels.centersUntouched, 'X-ray must leave the silhouette interior unfilled');
+}
+
 async function run() {
   assert.ok(CACHE_DEMO_BZ2 && fs.existsSync(CACHE_DEMO_BZ2), 'Set CS2_TEST_CACHE_DEMO to a local Cache .dem.bz2');
   assert.ok(NUKE_DEMO_PATH && fs.existsSync(NUKE_DEMO_PATH), 'Set CS2_TEST_NUKE_DEMO to a local Nuke .dem');
@@ -118,7 +216,7 @@ async function run() {
     '-geo-dirs',
     GEO_DIR,
     '-static',
-    path.join(REPO_ROOT, 'web', 'dist'),
+    process.env.CS2_STATIC_DIR || path.join(REPO_ROOT, 'web', 'dist'),
   ];
   serverArgs.push('-asset-dirs', ASSETS_DIR);
   const serverProc = spawn(binPath, serverArgs, {
@@ -213,6 +311,23 @@ async function run() {
     await page.waitForTimeout(200);
     await assertTagsAndHudClean(page, '02-viewer-tactical');
     await page.screenshot({ path: path.join(RENDERS_DIR, '02-viewer-tactical.png') });
+    await page.keyboard.press('F3');
+    await page.waitForFunction(() => {
+      const panel = document.getElementById('render-diagnostics');
+      return !panel.hidden && /FPS.*ms\/frame.*draw calls.*triangles/.test(panel.textContent);
+    });
+    const diagnostics = await page.evaluate(() => ({
+      warning: !document.getElementById('software-renderer-warning').hidden,
+      software: window.__CS2_VIEWER__.softwareRenderer,
+      renderer: window.__CS2_VIEWER__.rendererName,
+    }));
+    assert.equal(diagnostics.warning, diagnostics.software);
+    assert.ok(diagnostics.renderer);
+    await page.screenshot({ path: path.join(RENDERS_DIR, '20-render-diagnostics.png') });
+    await page.keyboard.press('F3');
+    assert.ok(await page.locator('#render-diagnostics').isHidden());
+    await assertOccludedOutlinePixels(page);
+    await assertOperatorsAcrossHalftime(page, BASE_URL, cacheDemoId);
 
     // Sweep 25 combat ticks across de_cache active round and verify zero nameplate overlaps + weapon-hand attachment
     const combatSweep = await page.evaluate(() => {
@@ -400,7 +515,7 @@ async function run() {
     await page.screenshot({ path: path.join(RENDERS_DIR, '05-viewer-freecam.png') });
     await page.click('#btn-blind-mode'); // reset blind mode to observer
 
-    // 8. Capture 09: Sniper Scope overlay + exact FOV <= 40
+    // 8. Capture 09: sniper scope overlay and projected world FOV.
     await page.click(`.round-pill[data-round="${scopeTarget.round}"]`);
     await page.waitForFunction((rNum) => document.getElementById('match-scoreboard-strip')?.textContent.includes(`Round ${rNum}/`), scopeTarget.round);
     await page.click(`#hud-player-${scopeTarget.slot}`);
@@ -411,8 +526,15 @@ async function run() {
     }, scopeTarget.tick);
     await page.waitForFunction(() => {
       const sc = document.getElementById('sniper-scope-overlay');
-      return sc && sc.style.display === 'block' && window.__CS2_VIEWER__.cameraFov <= 40;
+      return sc && sc.style.display === 'block';
     });
+    const scope = await page.evaluate(({ tick, slot }) => {
+      const s = window.__CS2_SCENE__;
+      const p = s.roundReplay.frames.find((f) => f.t >= tick)?.p[slot];
+      return { fov: s.camera.fov, weapon: s.roundReplay.weapons[p[13]], zoom: p[10], viewmodelVisible: s.viewModelGroup.visible };
+    }, scopeTarget);
+    assert.equal(scope.fov, cs2FovToVertical(povCameraFov(scope.weapon, scope.zoom)));
+    assert.equal(scope.viewmodelVisible, false);
     await page.waitForTimeout(150);
     await page.screenshot({ path: path.join(RENDERS_DIR, '09-viewer-scope.png') });
 
@@ -449,7 +571,9 @@ async function run() {
     // 11. Real de_nuke.glb (official CS2 PBR textures) + Real de_nuke_radar.png + CT/T Operators + POV weapon + close-up
     console.log('Testing de_nuke.glb real CS2 textures, operators, weapons, and radar...');
     await page.click('#btn-back-library');
-    await page.locator('[data-demo-row]', { hasText: 'de_nuke' }).locator('[data-open-demo]').click();
+    const nukeOpenBtn = page.locator('[data-demo-row]', { hasText: 'de_nuke' }).locator('[data-open-demo]');
+    const nukeDemoId = await nukeOpenBtn.getAttribute('data-open-demo');
+    await nukeOpenBtn.click();
     await page.waitForFunction(
       () =>
         window.__CS2_VIEWER__ &&
@@ -467,6 +591,26 @@ async function run() {
     await page.waitForTimeout(350);
     await assertTagsAndHudClean(page, '07-nuke-glb-tactical');
     await page.screenshot({ path: path.join(RENDERS_DIR, '07-nuke-glb-tactical.png') });
+    await assertOperatorsAcrossHalftime(page, BASE_URL, nukeDemoId);
+    const spawnAim = await page.evaluate(() => {
+      const s = window.__CS2_SCENE__;
+      const rig = s.playerRigs.find((r) => r.isRealOperator && r.root.visible && r.bones?.spine_1);
+      const names = ['spine_1', 'spine_2', 'head_0', 'wpnPivot'];
+      const pose = () => names.map((n) => rig.bones[n].quaternion.clone().normalize());
+      const sample = (pitchDeg) => s._poseOperatorSkeleton(rig, { pitchDeg, weaponKey: 'ak47', weaponCat: 'rifle' });
+      const delta = (a, b) => Math.max(...a.map((q, i) => q.angleTo(b[i])));
+      sample(0);
+      const neutral = pose();
+      sample(25);
+      const pitched = pose();
+      s.playing = true;
+      for (let i = 0; i < 48; i++) sample(25);
+      const drift = delta(pitched, pose());
+      sample(0);
+      s.playing = false;
+      return { drift, returned: delta(neutral, pose()), pitch: delta(neutral, pitched) };
+    });
+    assert.ok(spawnAim.pitch > 0.1 && spawnAim.drift < 1e-5 && spawnAim.returned < 1e-5, JSON.stringify(spawnAim));
 
     // Capture 14 on Round 1: Isolated standing pistol grip close-up (Glock / USP)
     await page.evaluate(() => {
@@ -639,7 +783,7 @@ async function run() {
     console.log('de_nuke render metrics:', { renderMetrics, qualityStats });
     assert.ok(renderMetrics.shadowEnabled, 'Directional sun shadow map must be enabled');
     assert.ok(renderMetrics.skyboxActive, 'Real CS2 skybox texture must be active');
-    assert.ok(renderMetrics.fps >= 30, `Expected >= 30 FPS on SwiftShader, got ${renderMetrics.fps}`);
+    assert.ok(renderMetrics.fps >= 30, `Expected >= 30 FPS in headless Chrome, got ${renderMetrics.fps}`);
     await page.screenshot({ path: path.join(RENDERS_DIR, '12-operators-weapons-closeup.png') });
 
     // 11b. Atomic POV switching across 5 slots + POV weapon close-ups (AK, M4, AWP, Knife) + >=3.2s Deathcam
@@ -656,12 +800,13 @@ async function run() {
         s.setCameraMode('pov', slot);
         const rig = s.rigBySlot.get(slot);
         if (rig.root.visible) errs.push(`slot ${slot} rig.root remained visible on synchronous switch`);
-        if (rig.worldWeaponGroup.visible) errs.push(`slot ${slot} worldWeaponGroup remained visible on switch`);
+        if (rig.worldWeaponGroup.visible || rig.root.userData.outlined) errs.push(`slot ${slot} POV extras remained visible on switch`);
       }
-      return { errs, animCount: s.operatorClips?.size || 0 };
+      return { errs, animCount: s.operatorClips?.size || 0, viewModelFov: s.vmCamera.fov };
     });
     assert.deepEqual(povAtomic.errs, [], `Atomic POV hide errors: ${povAtomic.errs.join(', ')}`);
     assert.ok(povAtomic.animCount >= 200, `Expected >=200 CS2 clips loaded, got ${povAtomic.animCount}`);
+    assert.equal(povAtomic.viewModelFov, cs2FovToVertical(VIEWMODEL_FOV));
 
     // Scan de_nuke Round 4 for isolated AK-47, M4, AWP, Knife POV frames + a kill with an alive teammate for >=3.2s deathcam
     const povSamples = await page.evaluate(() => {
@@ -773,7 +918,7 @@ async function run() {
 
     assert.deepEqual(pageErrors, [], `Unexpected page errors: ${pageErrors.join('; ')}`);
     assert.deepEqual(failedApiResponses, [], `Unexpected 5xx API responses: ${failedApiResponses.join('; ')}`);
-    console.log('All real Chrome E2E checks PASSED (12 screenshots captured).');
+    console.log('All real Chrome E2E checks PASSED.');
   } catch (err) {
     console.error('E2E test failed:', err);
     try {

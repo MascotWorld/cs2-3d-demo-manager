@@ -354,6 +354,34 @@ table.demo-table tr:hover td {
   inset: 0;
 }
 
+.software-renderer-warning {
+  padding: 7px 12px;
+  border-bottom: 1px solid #8c6526;
+  background: #35270d;
+  color: #ffe3a9;
+  font-size: 12px;
+}
+
+.render-diagnostics {
+  position: absolute;
+  z-index: 17;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  max-width: calc(100% - 24px);
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(9, 12, 18, 0.95);
+  color: var(--text-1);
+  font: 12px/1.5 var(--mono);
+  text-align: center;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
 .tags-overlay {
   position: absolute;
   inset: 0;

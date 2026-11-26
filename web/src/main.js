@@ -44,6 +44,7 @@ const state = {
   playbackSpeed: 1,
   qualitySetting: 'auto', // 'auto' | 'high' | 'medium' | 'low'
   activeQuality: 'high',
+  showRenderDiagnostics: false,
   showBookmarks: true,
   showCrosshairConfig: false,
   crosshair: {
@@ -906,13 +907,18 @@ function renderViewerView() {
         </div>
         <div class="row">
           <span class="map-pill" id="map-source-badge">Loading...</span>
+          <button class="btn btn-sm" id="btn-render-diagnostics" type="button" aria-controls="render-diagnostics" aria-expanded="false">Render stats [F3]</button>
           <button class="btn btn-sm" id="btn-scoreboard">Scoreboard [Tab]</button>
           <button class="btn btn-sm ${state.showBookmarks ? 'btn-active' : ''}" id="btn-toggle-bookmarks">Bookmarks (${(d.bookmarks || []).length})</button>
         </div>
       </div>
 
+      <div class="software-renderer-warning" id="software-renderer-warning" role="status" hidden>
+        <strong>Software rendering detected.</strong> In your browser’s System settings, enable graphics acceleration when available, then relaunch the browser.
+      </div>
       <div class="stage-wrap">
         <div class="three-container" id="three-stage"></div>
+        <pre class="render-diagnostics" id="render-diagnostics" aria-label="Renderer diagnostics" hidden></pre>
         <div class="tags-overlay" id="tags-overlay"></div>
         <div class="sniper-scope-overlay" id="sniper-scope-overlay"></div>
         <div class="pov-crosshair" id="pov-crosshair"></div>
@@ -1352,6 +1358,25 @@ function renderCrosshairConfigSlot() {
 function mountAndBindViewer() {
   const stage = document.getElementById('three-stage');
   const overlay = document.getElementById('tags-overlay');
+  const diagnostics = document.getElementById('render-diagnostics');
+  const diagnosticsToggle = document.getElementById('btn-render-diagnostics');
+  let lastDiagnosticsAt = -Infinity;
+  const updateDiagnostics = () => {
+    if (!state.showRenderDiagnostics) return;
+    const v = window.__CS2_VIEWER__;
+    const now = performance.now();
+    if (!v || now - lastDiagnosticsAt < 250) return;
+    lastDiagnosticsAt = now;
+    const frameStats = v.frameMs ? `${v.fps} FPS · ${v.frameMs.toFixed(1)} ms/frame` : 'Sampling frame time…';
+    diagnostics.textContent = `${v.rendererName}\n${frameStats} · ${v.drawCalls.toLocaleString()} draw calls · ${v.triangles.toLocaleString()} triangles`;
+  };
+  const setDiagnosticsVisible = (visible) => {
+    state.showRenderDiagnostics = visible;
+    diagnostics.hidden = !visible;
+    diagnosticsToggle.setAttribute('aria-expanded', String(visible));
+    lastDiagnosticsAt = -Infinity;
+    updateDiagnostics();
+  };
   const radarCanvas = document.getElementById('radar-canvas');
   if (radarCanvas) {
     radarInstance = new RadarRenderer(radarCanvas);
@@ -1368,6 +1393,7 @@ function mountAndBindViewer() {
       },
       onFrameRender: (snapshot, currentTick, playing) => {
         updateLiveFrameHUD(snapshot, currentTick, playing);
+        updateDiagnostics();
       },
       onQualityChange: ({ setting, active }) => {
         state.qualitySetting = setting;
@@ -1377,6 +1403,12 @@ function mountAndBindViewer() {
     });
     window.__CS2_SCENE__ = sceneInstance;
   }
+  if (sceneInstance) {
+    document.getElementById('software-renderer-warning').hidden = !sceneInstance.softwareRenderer;
+    state.activeQuality = sceneInstance.activeQuality;
+  }
+  diagnosticsToggle.addEventListener('click', () => setDiagnosticsVisible(!state.showRenderDiagnostics));
+  setDiagnosticsVisible(state.showRenderDiagnostics);
 
   renderTeamSideHudPanels();
   updateMatchHeaderScoreboard();
@@ -1605,6 +1637,11 @@ function bindModalHandlers() {
 // Global viewer hotkeys
 window.addEventListener('keydown', (e) => {
   if (state.view !== 'viewer' || !sceneInstance) return;
+  if (e.code === 'F3') {
+    e.preventDefault();
+    if (!e.repeat) document.getElementById('btn-render-diagnostics')?.click();
+    return;
+  }
   if (e.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
 
   if (e.code === 'Tab') {
