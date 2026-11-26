@@ -85,6 +85,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/assets/players/{role}", s.handleGetRolePlayerAsset)
 	s.mux.HandleFunc("GET /api/assets/weapons/{weaponName}", s.handleGetWeaponAsset)
 	s.mux.HandleFunc("GET /api/assets/skyboxes/{skyName}", s.handleGetSkyboxAsset)
+	s.mux.HandleFunc("GET /api/assets/hud/{group}/{filename}", s.handleGetHUDAsset)
 
 	if s.cfg.StaticDir != "" {
 		s.mux.HandleFunc("/", s.handleStatic)
@@ -302,6 +303,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"player_models":      s.listGlbStems("players"),
 		"weapon_models":      s.listGlbStems("weapons"),
 		"skyboxes":           s.listSkyboxes(),
+		"hud_assets":         s.listHUDAssets(),
 	})
 }
 
@@ -938,6 +940,87 @@ func (s *Server) handleGetSkyboxAsset(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	http.ServeFile(w, r, p)
+}
+
+func hudAssetSpec(group, filename string) (string, string) {
+	ext := filepath.Ext(filename)
+	if !validNameRe.MatchString(strings.TrimSuffix(filename, ext)) {
+		return "", ""
+	}
+	if group == "fonts" {
+		switch ext {
+		case ".otf", ".ttf", ".woff2":
+			return filepath.Join("fonts", filename), "font/" + ext[1:]
+		}
+	}
+	if ext == ".svg" && (group == "equipment" || group == "deathnotice" || group == "hud") {
+		return filepath.Join("icons", group, filename), "image/svg+xml"
+	}
+	return "", ""
+}
+
+func (s *Server) hudAssetDirs() []string {
+	return append([]string{filepath.Join(s.cfg.Store.DataDir(), "assets")}, s.allAssetDirs()...)
+}
+
+func (s *Server) listHUDAssets() []string {
+	files := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, root := range s.hudAssetDirs() {
+		for _, group := range []string{"fonts", "equipment", "deathnotice", "hud"} {
+			subdir := group
+			if group != "fonts" {
+				subdir = filepath.Join("icons", group)
+			}
+			entries, _ := os.ReadDir(filepath.Join(root, subdir))
+			for _, entry := range entries {
+				key := group + "/" + entry.Name()
+				if entry.Type().IsRegular() && !seen[key] {
+					if _, mime := hudAssetSpec(group, entry.Name()); mime != "" {
+						files = append(files, key)
+						seen[key] = true
+					}
+				}
+			}
+		}
+	}
+	sort.Strings(files)
+	return files
+}
+
+func (s *Server) handleGetHUDAsset(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("filename")
+	path, mime := hudAssetSpec(r.PathValue("group"), name)
+	if path == "" {
+		writeErr(w, http.StatusNotFound, "HUD asset not found")
+		return
+	}
+	for _, dir := range s.hudAssetDirs() {
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			continue
+		}
+		f, err := root.Open(path)
+		root.Close()
+		if err != nil {
+			continue
+		}
+		st, err := f.Stat()
+		if err != nil || !st.Mode().IsRegular() {
+			f.Close()
+			continue
+		}
+		defer f.Close()
+		w.Header().Set("Content-Type", mime)
+		w.Header().Set("Cache-Control", "private, max-age=86400")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if mime == "image/svg+xml" {
+			w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+		}
+		http.ServeContent(w, r, name, st.ModTime(), f)
+		return
+	}
+	writeErr(w, http.StatusNotFound, "HUD asset not found")
 }
 
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {

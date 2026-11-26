@@ -43,10 +43,13 @@ The directory flags accept comma-separated paths. Pass `-geo-dirs /path/to/geome
 | `1`–`9`, `0` | Switch to player slots 1–10 |
 | `[` / `]` | Switch to the previous or next alive player |
 | `X` | Toggle X-ray and player nameplates |
+| `Shift+F2` | Show or hide the demo tooling tray (cameras, transport, rounds, render stats) |
 | `F3` | Toggle renderer diagnostics: GPU, FPS, frame time, draw calls, and triangles |
 | `Tab` | Toggle the scoreboard |
 | `Space` | Play or pause outside free camera |
 | `←` / `→` | Step one tick outside free camera |
+
+The game frame is uncluttered by default: the observer HUD draws the CS2 top cards, round clock, radar, killfeed, bottom POV clusters, round outcome banner, and Tab scoreboard, while every control lives in the collapsed demo tooling tray at the bottom-left of the frame.
 
 Playback continues into the next round. Use the match timeline or **Go to tick** to seek across rounds, or jump by 15 seconds or to the next kill. The round timeline still lets you step through individual ticks. POV demos may omit updates for players outside the recorder's potentially visible set; the viewer displays a warning when it detects a POV recording.
 
@@ -64,7 +67,13 @@ data/assets/
   radars/de_nuke_radar.png
   radars/de_nuke_lower.png
   skyboxes/de_nuke.webp
+  fonts/stratum2-regular.otf
+  icons/equipment/ak47.svg
+  icons/deathnotice/icon_headshot.svg
+  icons/hud/health_cross.svg
 ```
+
+The HUD uses the CS2 fonts and icons from `fonts/`, `icons/equipment/`, `icons/deathnotice/`, and `icons/hud/` when they are present, serves them read-only from `/api/assets/hud/{group}/{file}`, and falls back to bundled vector shapes when they are not. Each group accepts only its own file types, so the endpoint never exposes anything outside those folders.
 
 Use `-asset-dirs /path/to/asset-root` to point the server at another directory with the same layout. Map GLBs can also be added from **Local Maps & .GLB** in the library. The animation bundle is optional and needs the Source 2 operator skeleton and the clip names used by the viewer; a generic animation export is not a drop-in replacement.
 

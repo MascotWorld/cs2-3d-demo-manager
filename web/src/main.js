@@ -1,4 +1,5 @@
 import './styles.css';
+import './viewer/hud.css';
 import { api } from './api.js';
 import { DemoScene } from './viewer/scene.js';
 import { RadarRenderer } from './viewer/radar.js';
@@ -15,11 +16,12 @@ import {
 } from './viewer/math.js';
 import {
   weaponSvgIcon,
+  configureHudAssets,
   hpCrossIcon,
   armorIcon,
   defuseKitIcon,
   skullIcon,
-  headshotIcon,
+  deathNoticeIcon,
 } from './viewer/icons.js';
 
 const SPEEDS = [0.1, 0.25, 0.5, 1, 2, 4, 6, 8];
@@ -50,6 +52,7 @@ const state = {
   qualitySetting: 'auto', // 'auto' | 'high' | 'medium' | 'low'
   activeQuality: 'high',
   showRenderDiagnostics: false,
+  showDemoControls: false,
   showBookmarks: true,
   showCrosshairConfig: false,
   crosshair: {
@@ -109,7 +112,9 @@ async function openDemoInViewer(id) {
     const detail = await api.getDemo(id);
     const health = await api.health();
     state.health = health;
+    configureHudAssets(health.hud_assets);
     state.activeDemo = detail;
+    state.showDemoControls = false;
     state.roundCache.clear();
     state.roundRequest++;
     state.roundReplay = null;
@@ -312,26 +317,22 @@ function renderTeamSideHudPanels() {
     else tPlayers.push(p);
   }
 
-  const rowHtml = (p, isCT) => `
-    <div class="hud-player-row ${isCT ? 'team-ct' : 'team-t'}" id="hud-player-${p.slot}" data-pov-slot="${p.slot}" title="${esc(p.name)}">
-      <div class="hud-sq-top">
+  const rowHtml = (p) => `
+    <button type="button" class="hud-player-row" id="hud-player-${p.slot}" data-pov-slot="${p.slot}" title="${esc(p.name)}" aria-label="Spectate ${esc(p.name)}">
+      <span class="hud-player-name">${esc(p.name)}</span>
+      <span class="hud-player-frame">
         <span class="hud-sq-slot">${(p.slot + 1) % 10}</span>
-        <span class="hud-player-name">${esc(p.name)}</span>
-        <span class="hud-player-meta">$${0}</span>
-      </div>
-      <div class="hud-sq-mid">
+        <span class="hud-hp-num">100</span>
         <span class="hud-player-weapon"></span>
         <span class="hud-sq-gear"></span>
-      </div>
-      <div class="hud-sq-bot">
-        <span class="mono hud-hp-num ${isCT ? 'score-ct' : 'score-t'}">100</span>
-        <div class="hp-track"><div class="hud-hp-fill ${isCT ? 'hp-fill-ct' : 'hp-fill-t'}" style="width:100%;"></div></div>
-      </div>
-    </div>
+        <span class="hp-track"><span class="hud-hp-fill" style="width:100%;"></span></span>
+      </span>
+      <span class="hud-money">$0</span>
+    </button>
   `;
 
-  ctEl.innerHTML = ctPlayers.map((p) => rowHtml(p, true)).join('');
-  tEl.innerHTML = tPlayers.map((p) => rowHtml(p, false)).join('');
+  ctEl.innerHTML = ctPlayers.map(rowHtml).join('');
+  tEl.innerHTML = tPlayers.map(rowHtml).join('');
 
   document.querySelectorAll('[data-pov-slot]').forEach((el) => {
     el.addEventListener('click', () => {
@@ -343,6 +344,19 @@ function renderTeamSideHudPanels() {
       updateViewerControlsDOM();
     });
   });
+}
+
+function utilityIcons(inventory, className, limit = Infinity) {
+  return [
+    ['smoke', 'smokegrenade', 'Smoke'],
+    ['flash', 'flashbang', 'Flashbang'],
+    ['he', 'hegrenade', 'HE grenade'],
+    ['molly', 'molotov', 'Molotov / incendiary'],
+    ['decoy', 'decoy', 'Decoy'],
+    ['c4', 'c4', 'C4'],
+  ].flatMap(([key, weapon, label]) => Array.from({ length: inventory[key] }, () =>
+    `<span class="${className}${key === 'c4' ? ' is-c4' : ''}" title="${label}">${weaponSvgIcon(weapon, 'inventory-svg')}</span>`,
+  )).slice(0, limit).join('');
 }
 
 function updateMatchHeaderScoreboard() {
@@ -387,6 +401,7 @@ function updateViewerControlsDOM() {
   const markersEl = document.getElementById('scrubber-markers');
   const rr = state.roundReplay;
   document.getElementById('pov-recording-warning').hidden = !rr?.is_pov;
+  document.querySelector('.radar-box')?.classList.toggle('player-radar', !!rr?.is_pov);
   const matchScrubber = document.getElementById('match-timeline-scrubber');
   if (matchScrubber && rr?.frames?.length && !followingRound()) {
     matchScrubber.max = String(Math.max(Number(matchScrubber.max), rr.frames.at(-1).t));
@@ -546,8 +561,8 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
   const actionText = document.getElementById('bomb-action-text');
   const actionFill = document.getElementById('bomb-action-fill');
   if (clockBox && clockText && clockPhase && clockInfo) {
-    clockBox.classList.toggle('planted', clockInfo.phase === 'planted');
-    clockBox.classList.toggle('freeze', clockInfo.phase === 'freeze');
+    clockBox.dataset.phase = clockInfo.phase;
+    clockBox.dataset.team = String(clockInfo.team || 0);
     if (clockInfo.phase === 'planted') {
       clockPhase.textContent = clockInfo.site ? `C4 [${clockInfo.site}]` : 'C4 PLANTED';
       clockText.textContent = clockInfo.clockText;
@@ -607,20 +622,24 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
     outcome.hidden = !roundOver;
     if (roundOver) {
       const mvp = state.activeDemo.players?.find((player) => player.slot === rr.mvp?.slot);
-      outcome.classList.toggle('team-ct', winner === 3);
+      outcome.dataset.winner = String(winner);
       outcome.querySelector('strong').textContent = winner === 3 ? 'Counter-Terrorists Win' : winner === 2 ? 'Terrorists Win' : 'Round Draw';
-      outcome.querySelector('span').textContent = [winner && round.win_reason, mvp && `MVP: ${mvp.name}`].filter(Boolean).join(' · ');
+      outcome.querySelector('.round-end-reason').textContent = winner ? round.win_reason : '';
+      const mvpLine = outcome.querySelector('.round-end-mvp');
+      mvpLine.hidden = !mvp;
+      mvpLine.querySelector('.round-end-mvp-name').textContent = mvp ? `MVP: ${mvp.name}` : '';
     }
   }
 
   const weapons = rr?.weapons || [];
   const obsSlot = snapshot?.observedSlot ?? state.povSlot;
   const obs = state.cameraMode === 'pov' ? snapshot?.players?.[obsSlot] : null;
+  const obsAlive = !!(obs && obs[0] === 1 && (obs[7] || 0) > 0);
   const damage = document.getElementById('pov-damage');
   if (damage) {
     const hurts = rr?.hurts || [];
     const windowStart = currentTick - tickRate * 0.75;
-    const latest = obs?.[0] === 1 && !snapshot?.deathCamActive && hurts.findLast((h) =>
+    const latest = obsAlive && !snapshot?.deathCamActive && hurts.findLast((h) =>
       h.tick <= currentTick && h.tick >= windowStart && h.dmg_hp > 0 && (h.attacker_slot === obsSlot || h.victim_slot === obsSlot));
     damage.hidden = !latest;
     if (latest) {
@@ -639,13 +658,13 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
   }
   const obsWeapon = obs && obs[13] >= 0 && weapons[obs[13]] ? weapons[obs[13]] : '';
   const obsZoom = obs ? obs[10] || 0 : 0;
-  const sniperScoped = state.cameraMode === 'pov' && obs && obs[0] === 1 && isSniperWeapon(obsWeapon) && obsZoom > 0;
+  const sniperScoped = state.cameraMode === 'pov' && obsAlive && isSniperWeapon(obsWeapon) && obsZoom > 0;
 
   // Crosshair & Sniper Scope overlay
   const xhEl = document.getElementById('pov-crosshair');
   const scopeEl = document.getElementById('sniper-scope-overlay');
   if (xhEl) {
-    xhEl.style.display = state.cameraMode === 'pov' && obs && obs[0] === 1 && !sniperScoped ? 'block' : 'none';
+    xhEl.style.display = state.cameraMode === 'pov' && obsAlive && !sniperScoped ? 'block' : 'none';
   }
   if (scopeEl) {
     scopeEl.style.display = sniperScoped ? 'block' : 'none';
@@ -657,8 +676,8 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
   const meter = document.getElementById('flash-meter');
   const meterFill = document.getElementById('flash-meter-fill');
   const meterText = document.getElementById('flash-meter-text');
-  const flashFrac = state.cameraMode === 'pov' && obs && obs[0] === 1 ? obs[11] || 0 : 0;
-  const flashAlpha = state.cameraMode === 'pov' && obs && obs[0] === 1 ? obs[12] || 1 : 0;
+  const flashFrac = state.cameraMode === 'pov' && obsAlive ? obs[11] || 0 : 0;
+  const flashAlpha = state.cameraMode === 'pov' && obsAlive ? obs[12] || 1 : 0;
 
   if (vig && blindFull && meter && meterFill && meterText) {
     if (flashFrac > 0.03) {
@@ -686,7 +705,7 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
   // Bottom POV HUD (1:1 CS2 HP + Armor left, Large Ammo + Weapon + Grenade Icons right)
   const povHud = document.getElementById('pov-bottom-hud');
   if (povHud) {
-    if (state.cameraMode === 'pov' && obs && obs[0] === 1 && !snapshot?.deathCamActive) {
+    if (state.cameraMode === 'pov' && obsAlive && !snapshot?.deathCamActive) {
       const isCT = obs[1] === 3;
       const hp = Math.round(obs[7] || 0);
       const armor = Math.round(obs[8] || 0);
@@ -711,7 +730,7 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
       const utilEl = document.getElementById('pov-hud-util');
       if (hpEl) {
         hpEl.innerHTML = `${hpCrossIcon('pov-hp-cross')}<span>${hp}</span>`;
-        hpEl.className = `pov-hp-big ${isCT ? 'score-ct' : 'score-t'}`;
+        hpEl.className = 'pov-hp-big';
       }
       if (hpFillEl) {
         hpFillEl.style.width = `${Math.max(0, Math.min(100, hp))}%`;
@@ -723,24 +742,16 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
         nameEl.textContent = obsMeta?.name || `Player ${obsSlot + 1}`;
       }
       if (wEl) {
-        wEl.innerHTML = `${weaponSvgIcon(obsWeapon, 'pov-w-svg')}<span>${esc(obsWeapon || 'Knife')}</span>`;
+        wEl.innerHTML = weaponSvgIcon(obsWeapon || 'knife', 'pov-w-svg');
+        wEl.title = obsWeapon || 'Knife';
       }
       if (ammoEl) {
         ammoEl.innerHTML = mag !== null
           ? `<span class="ammo-mag">${mag}</span><span class="ammo-sep">/</span><span class="ammo-res">${res ?? 0}</span>`
-          : `<span class="ammo-mag">—</span>`;
+          : '';
       }
-      if (utilEl) {
-        const chips = [];
-        if (util.smoke) chips.push(`<span class="util-chip" title="Smoke">${weaponSvgIcon('smokegrenade', 'util-svg')}${util.smoke > 1 ? `×${util.smoke}` : ''}</span>`);
-        if (util.flash) chips.push(`<span class="util-chip" title="Flashbang">${weaponSvgIcon('flashbang', 'util-svg')}${util.flash > 1 ? `×${util.flash}` : ''}</span>`);
-        if (util.he) chips.push(`<span class="util-chip" title="HE Grenade">${weaponSvgIcon('hegrenade', 'util-svg')}</span>`);
-        if (util.molly) chips.push(`<span class="util-chip" title="Molotov/Incendiary">${weaponSvgIcon('molotov', 'util-svg')}</span>`);
-        if (util.decoy) chips.push(`<span class="util-chip" title="Decoy">${weaponSvgIcon('decoy', 'util-svg')}</span>`);
-        if (util.c4) chips.push(`<span class="util-chip c4" title="C4">${weaponSvgIcon('c4', 'util-svg')}</span>`);
-        utilEl.innerHTML = chips.join('');
-      }
-    } else if (state.cameraMode === 'pov' && snapshot?.deathCamActive) {
+      if (utilEl) utilEl.innerHTML = utilityIcons(util, 'pov-util-icon');
+    } else if (state.cameraMode === 'pov' && (snapshot?.deathCamActive || (state.cameraMode === 'pov' && obs && !obsAlive))) {
       const obsMeta = state.activeDemo?.players?.find((pl) => pl.slot === obsSlot);
       const killEv = (rr?.kills || []).find((k) => k.victim_slot === obsSlot && k.tick <= rounded);
       povHud.style.display = 'flex';
@@ -778,7 +789,7 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
       const row = document.getElementById(`hud-player-${slot}`);
       if (!row) continue;
       const p = snapshot.players[slot];
-      const alive = p && p[0] === 1;
+      const alive = !!(p && p[0] === 1 && (p[7] || 0) > 0);
       const hp = alive ? Math.round(p[7]) : 0;
       const armor = alive ? Math.round(p[8] || 0) : 0;
       const flags = p ? p[14] || 0 : 0;
@@ -787,33 +798,30 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
       const wIdx = p ? p[13] : -1;
       const weapon = wIdx >= 0 && weapons[wIdx] ? weapons[wIdx] : '';
       const flash = p ? p[11] || 0 : 0;
-      const money = p && p.length > 15 ? Math.round(p[15] || 0) : 0;
-      const rKills = p && p.length > 22 ? Math.round(p[22] || 0) : 0;
-
       row.classList.toggle('dead', !alive);
-      row.classList.toggle('observed', state.cameraMode === 'pov' && obsSlot === slot);
+      row.classList.toggle('observed', (state.cameraMode === 'pov' || state.cameraMode === 'chase') && obsSlot === slot);
       const hpEl = row.querySelector('.hud-hp-num');
       const fillEl = row.querySelector('.hud-hp-fill');
       const wEl = row.querySelector('.hud-player-weapon');
       const gearEl = row.querySelector('.hud-sq-gear');
-      const metaEl = row.querySelector('.hud-player-meta');
+      const moneyEl = row.querySelector('.hud-money');
       if (hpEl) {
-        hpEl.innerHTML = alive ? String(hp) : skullIcon('sq-skull');
+        hpEl.textContent = alive ? String(hp) : '×';
+      }
+      if (moneyEl) {
+        moneyEl.textContent = `$${Math.round(p ? p[15] || 0 : 0)}`;
       }
       if (fillEl) fillEl.style.width = `${hp}%`;
       if (wEl) {
         wEl.innerHTML = alive
-          ? `${weaponSvgIcon(weapon, 'sq-w-svg')}${flash > 0.15 ? '<span class="sq-blind-tag">⚡</span>' : ''}`
+          ? `${weaponSvgIcon(weapon || 'knife', 'sq-w-svg')}${flash > 0.15 ? deathNoticeIcon('blind', 'sq-blind-ico') : ''}`
           : '';
         wEl.title = alive ? weapon : 'Dead';
       }
       if (gearEl) {
         gearEl.innerHTML = alive
-          ? `${armor > 0 ? armorIcon(hasHelm, 'sq-gear-ico') : ''}${hasKit ? defuseKitIcon('sq-kit-ico') : ''}`
+          ? `${armor > 0 ? armorIcon(hasHelm, 'sq-gear-ico') : ''}${hasKit ? defuseKitIcon('sq-kit-ico') : ''}${utilityIcons(unpackUtilityCounts(p[19]), 'sq-util-icon', 3)}`
           : '';
-      }
-      if (metaEl) {
-        metaEl.textContent = rKills > 0 ? `${rKills}K · $${money}` : `$${money}`;
       }
     }
   }
@@ -827,23 +835,21 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
       .slice(-5);
     kfEl.innerHTML = recent
       .map((k) => {
-        const isObsInvolved = state.cameraMode === 'pov' && (k.killer_slot === obsSlot || k.victim_slot === obsSlot);
+        const inPov = state.cameraMode === 'pov';
+        const isDeath = inPov && k.victim_slot === obsSlot;
+        const isObserved = inPov && (k.killer_slot === obsSlot || k.assister_slot === obsSlot);
         const assistHtml = k.assister_name
-          ? `<span class="kf-assist">${k.assisted_flash ? '☀ ' : '+ '}${esc(k.assister_name)}</span>`
+          ? `<span class="kf-assist">${k.assisted_flash ? deathNoticeIcon('flash-assist', 'kf-mod-icon') : '+'}<span class="${k.assister_team === 3 ? 'score-ct' : 'score-t'}">${esc(k.assister_name)}</span></span>`
           : '';
-        const badges = [
-          k.headshot ? `<span class="kf-badge hs" title="Headshot">${headshotIcon('kf-hs-svg')}</span>` : '',
-          k.wallbang ? '<span class="kf-badge">WB</span>' : '',
-          k.through_smoke ? '<span class="kf-badge">SMK</span>' : '',
-          k.no_scope ? '<span class="kf-badge">NS</span>' : '',
-          k.attacker_blind ? '<span class="kf-badge">BLIND</span>' : '',
-        ].join('');
-        return `<div class="killfeed-item ${isObsInvolved ? 'kf-highlight' : ''}">
+        const before = [[k.attacker_blind, 'blind'], [k.no_scope, 'noscope']].map(([enabled, icon]) => enabled ? deathNoticeIcon(icon, 'kf-mod-icon') : '').join('');
+        const after = [[k.wallbang, 'wallbang'], [k.through_smoke, 'smoke'], [k.headshot, 'headshot']].map(([enabled, icon]) => enabled ? deathNoticeIcon(icon, 'kf-mod-icon') : '').join('');
+        return `<div class="killfeed-item ${isDeath ? 'kf-death' : isObserved ? 'kf-highlight' : ''}">
+          ${before}
           <span class="kf-killer">
             <span class="${k.killer_team === 3 ? 'score-ct' : 'score-t'}">${esc(k.killer_name)}</span>
             ${assistHtml}
           </span>
-          <span class="kf-weapon-cell" title="${esc(k.weapon)}">${weaponSvgIcon(k.weapon, 'kf-w-svg')}${badges}</span>
+          <span class="kf-weapon-cell" title="${esc(k.weapon)}">${weaponSvgIcon(k.weapon, 'kf-w-svg')}${after}</span>
           <span class="kf-victim ${k.victim_team === 3 ? 'score-ct' : 'score-t'}">${esc(k.victim_name)}</span>
         </div>`;
       })
@@ -1020,20 +1026,6 @@ function renderViewerView() {
 
   return `
     <main class="viewer-view">
-      <div class="viewer-hud-top">
-        <div class="row">
-          <button class="btn btn-sm" id="btn-back-library">← Library</button>
-          <span class="map-pill">${esc(meta.map_name)}</span>
-          <span class="muted" style="font-weight:600;">${esc(meta.filename)}</span>
-        </div>
-        <div class="row">
-          <span class="map-pill" id="map-source-badge">Loading...</span>
-          <button class="btn btn-sm" id="btn-render-diagnostics" type="button" aria-controls="render-diagnostics" aria-expanded="false">Render stats [F3]</button>
-          <button class="btn btn-sm" id="btn-scoreboard">Scoreboard [Tab]</button>
-          <button class="btn btn-sm ${state.showBookmarks ? 'btn-active' : ''}" id="btn-toggle-bookmarks">Bookmarks (${(d.bookmarks || []).length})</button>
-        </div>
-      </div>
-
       <div class="software-renderer-warning" id="software-renderer-warning" role="status" hidden>
         <strong>Software rendering detected.</strong> In your browser’s System settings, enable graphics acceleration when available, then relaunch the browser.
       </div>
@@ -1047,7 +1039,10 @@ function renderViewerView() {
         <div class="sniper-scope-overlay" id="sniper-scope-overlay"></div>
         <div class="pov-crosshair" id="pov-crosshair"></div>
         <div class="pov-damage" id="pov-damage" hidden></div>
-        <div class="round-end-banner" id="round-end-banner" hidden><strong></strong><span></span></div>
+        <div class="round-end-banner" id="round-end-banner" hidden>
+          <div class="round-end-main"><span class="round-end-emblem" aria-hidden="true">★</span><strong></strong><span class="round-end-reason"></span></div>
+          <div class="round-end-mvp" hidden><span class="round-end-mvp-star" aria-hidden="true">★</span><span class="round-end-mvp-name"></span></div>
+        </div>
         <div class="flash-vignette" id="flash-vignette"></div>
         <div class="flash-blind-full" id="flash-blind-full"></div>
         <div class="flash-meter" id="flash-meter">
@@ -1061,20 +1056,24 @@ function renderViewerView() {
           <span class="radar-level-badge" id="radar-level-badge">UPPER</span>
         </div>
 
-        <div class="round-clock-banner">
-          <div class="round-clock-box" id="round-clock-box">
-            <span class="cs2-team-score ct" id="hud-score-ct">0</span>
-            <div class="cs2-clock-center">
-              <span id="round-clock-text">1:55</span>
-              <span class="cs2-clock-phase" id="round-clock-phase">LIVE</span>
+        <div class="native-top-hud">
+          <aside class="team-hud ct" id="team-hud-ct" aria-label="Counter-Terrorists"></aside>
+          <div class="round-clock-banner">
+            <div class="round-clock-box" id="round-clock-box">
+              <span class="cs2-team-score ct" id="hud-score-ct">0</span>
+              <div class="cs2-clock-center">
+                <span id="round-clock-text">1:55</span>
+                <span class="cs2-clock-phase" id="round-clock-phase">LIVE</span>
+              </div>
+              <span class="cs2-team-score t" id="hud-score-t">0</span>
             </div>
-            <span class="cs2-team-score t" id="hud-score-t">0</span>
+            <div class="match-scoreboard-strip" id="match-scoreboard-strip"></div>
+            <div class="bomb-action-bar" id="bomb-action-bar">
+              <span id="bomb-action-text">DEFUSING</span>
+              <div class="bomb-action-track"><div class="bomb-action-fill" id="bomb-action-fill" style="width:0%"></div></div>
+            </div>
           </div>
-          <div class="match-scoreboard-strip" id="match-scoreboard-strip"></div>
-          <div class="bomb-action-bar" id="bomb-action-bar">
-            <span id="bomb-action-text">DEFUSING</span>
-            <div class="bomb-action-track"><div class="bomb-action-fill" id="bomb-action-fill" style="width:0%"></div></div>
-          </div>
+          <aside class="team-hud t" id="team-hud-t" aria-label="Terrorists"></aside>
         </div>
 
         <div class="pov-bottom-hud" id="pov-bottom-hud">
@@ -1094,102 +1093,113 @@ function renderViewerView() {
             </div>
           </div>
         </div>
-
-        <aside class="team-hud ct" id="team-hud-ct"></aside>
-        <aside class="team-hud t" id="team-hud-t"></aside>
-
-        <aside class="right-overlay">
-          <div class="cam-toolbar">
-            <div class="cam-toolbar-hdr">
-              <span class="muted" style="font-size:11px; font-weight:600;">CAMERA &amp; OVERLAYS</span>
-              <span class="shortcuts-hint">WASD Free · 1-0 POV · X X-Ray</span>
-            </div>
-            <div class="spectator-cameras">
-              <button class="btn btn-sm" data-cam-mode="tactical" id="btn-cam-tactical">Tactical [T]</button>
-              <button class="btn btn-sm" data-cam-mode="free" id="btn-cam-free">Free [F]</button>
-              <button class="btn btn-sm" data-cam-mode="pov" id="btn-cam-pov">1st POV</button>
-              <button class="btn btn-sm" data-cam-mode="chase" id="btn-cam-chase">Chase [V]</button>
-            </div>
-            <div class="row">
-              <button class="btn btn-sm" id="btn-spec-prev" style="flex:1;">Previous alive [</button>
-              <button class="btn btn-sm" id="btn-spec-next" style="flex:1;">Next alive ]</button>
-            </div>
-            <div class="row">
-              <button class="btn btn-sm" id="btn-xray" style="flex:1;">X-Ray [X]</button>
-              <button class="btn btn-sm" id="btn-tracers" style="flex:1;">Tracers</button>
-              <button class="btn btn-sm" id="btn-reset-cam">Reset</button>
-            </div>
-            <div class="row">
-              <button class="btn btn-sm" id="btn-blind-mode" style="flex:1;">Blind: Observer</button>
-              <button class="btn btn-sm" id="btn-audio-toggle">Audio: Off</button>
-              <button class="btn btn-sm ${state.showCrosshairConfig ? 'btn-active' : ''}" id="btn-crosshair-cfg">XH</button>
-            </div>
-            <div class="row">
-              <span class="muted" style="font-size:11px;">Quality</span>
-              <select class="input" id="select-quality" style="flex:1; padding:3px 6px; font-size:11px;">
-                <option value="auto" ${state.qualitySetting === 'auto' ? 'selected' : ''}>Auto (FPS Guard)</option>
-                <option value="high" ${state.qualitySetting === 'high' ? 'selected' : ''}>High (2048px Shadows)</option>
-                <option value="medium" ${state.qualitySetting === 'medium' ? 'selected' : ''}>Medium (512px Shadows)</option>
-                <option value="low" ${state.qualitySetting === 'low' ? 'selected' : ''}>Low (Fastest / No Shadows)</option>
-              </select>
-              <span class="map-pill" id="quality-active-badge" style="font-size:10px;">AUTO · HIGH</span>
-            </div>
-            <div id="crosshair-cfg-slot"></div>
-          </div>
-
-          <div class="killfeed" id="killfeed-list"></div>
-
-          <div class="drawer-panel" id="bookmarks-drawer" style="display:${state.showBookmarks ? 'flex' : 'none'};">
-            <div class="card-title" style="margin:0;">Tick Bookmarks</div>
-            <form id="form-add-bookmark" class="bookmark-form-grid">
-              <div class="bookmark-form-row">
-                <input class="input" id="input-bm-label" type="text" placeholder="Label (e.g. AWP entry)" required />
-                <button class="btn btn-primary btn-sm" type="submit" id="btn-save-bookmark">Save</button>
-              </div>
-              <div class="bookmark-form-row">
-                <input class="input" id="input-bm-note" type="text" placeholder="Optional note" />
-              </div>
-            </form>
-            <div id="bookmarks-list" style="display:flex; flex-direction:column; gap:5px;"></div>
-          </div>
-        </aside>
+        <div class="killfeed" id="killfeed-list" aria-label="Kill feed"></div>
       </div>
-
-      <footer class="timeline-bar">
-        <div class="rounds-strip">
-          ${d.rounds
-            .map(
-              (r) => `<button class="round-pill ${r.winner_team === 3 ? 'win-ct' : r.winner_team === 2 ? 'win-t' : ''} ${r.round_number === state.activeRoundNum ? 'active' : ''}" data-round="${r.round_number}" title="Round ${r.round_number}: ${esc(r.win_reason)}">R${r.round_number}</button>`
-            )
-            .join('')}
-        </div>
-        <div class="match-transport">
-          <label for="match-timeline-scrubber">Match timeline</label>
-          <input id="match-timeline-scrubber" type="range" min="${d.rounds[0]?.start_tick || 0}" max="${Math.max(d.rounds.at(-1)?.official_end_tick || 0, d.rounds.at(-1)?.end_tick || 0)}" />
-          <button class="btn btn-sm" id="btn-skip-back">−15 s</button>
-          <button class="btn btn-sm" id="btn-skip-fwd">+15 s</button>
-          <button class="btn btn-sm" id="btn-next-kill">Next kill</button>
-          <form class="match-go-to" id="form-go-to-tick">
-            <input class="input" id="input-go-to-tick" type="number" step="1" aria-label="Target tick" placeholder="Tick" required />
-            <button class="btn btn-sm" type="submit">Go to tick</button>
-          </form>
-        </div>
-        <div class="transport-row">
-          <button class="btn btn-primary btn-sm" id="btn-play" style="min-width:64px;">Play</button>
-          <button class="btn btn-sm" id="btn-step-back">-16t</button>
-          <button class="btn btn-sm" id="btn-step-back-1">-1t</button>
-          <button class="btn btn-sm" id="btn-step-fwd-1">+1t</button>
-          <button class="btn btn-sm" id="btn-step-fwd">+16t</button>
-          <select class="input" id="select-speed" style="padding:4px 8px;">
-            ${SPEEDS.map((s) => `<option value="${s}" ${state.playbackSpeed === s ? 'selected' : ''}>${s}x</option>`).join('')}
-          </select>
-          <div class="scrubber-wrap">
-            <div class="scrubber-markers" id="scrubber-markers"></div>
-            <input class="scrubber-input" type="range" id="timeline-scrubber" min="0" max="100" value="0" />
+      <details class="demo-tools" id="demo-tools" ${state.showDemoControls ? 'open' : ''}>
+        <summary class="demo-tools-toggle">Demo UI <kbd>Shift+F2</kbd></summary>
+        <div class="demo-tools-content">
+          <div class="viewer-hud-top">
+            <div class="row">
+              <button class="btn btn-sm" id="btn-back-library">← Library</button>
+              <span class="map-pill">${esc(meta.map_name)}</span>
+              <span class="muted" style="font-weight:600;">${esc(meta.filename)}</span>
+            </div>
+            <div class="row">
+              <span class="map-pill" id="map-source-badge">Loading...</span>
+              <button class="btn btn-sm" id="btn-render-diagnostics" type="button" aria-controls="render-diagnostics" aria-expanded="false">Render stats [F3]</button>
+              <button class="btn btn-sm" id="btn-scoreboard">Scoreboard [Tab]</button>
+              <button class="btn btn-sm ${state.showBookmarks ? 'btn-active' : ''}" id="btn-toggle-bookmarks">Bookmarks (${(d.bookmarks || []).length})</button>
+            </div>
           </div>
-          <span class="mono muted" id="hud-tick-label" style="min-width:185px; text-align:right;">Tick 0 · 0:00 / 0:00</span>
+          <div class="demo-tools-panels">
+            <div class="cam-toolbar">
+              <div class="cam-toolbar-hdr">
+                <span class="muted" style="font-size:11px; font-weight:600;">CAMERA &amp; OVERLAYS</span>
+                <span class="shortcuts-hint">WASD Free · 1-0 POV · X X-Ray</span>
+              </div>
+              <div class="spectator-cameras">
+                <button class="btn btn-sm" data-cam-mode="tactical" id="btn-cam-tactical">Tactical [T]</button>
+                <button class="btn btn-sm" data-cam-mode="free" id="btn-cam-free">Free [F]</button>
+                <button class="btn btn-sm" data-cam-mode="pov" id="btn-cam-pov">1st POV</button>
+                <button class="btn btn-sm" data-cam-mode="chase" id="btn-cam-chase">Chase [V]</button>
+              </div>
+              <div class="row">
+                <button class="btn btn-sm" id="btn-spec-prev" style="flex:1;">Previous alive [</button>
+                <button class="btn btn-sm" id="btn-spec-next" style="flex:1;">Next alive ]</button>
+              </div>
+              <div class="row">
+                <button class="btn btn-sm" id="btn-xray" style="flex:1;">X-Ray [X]</button>
+                <button class="btn btn-sm" id="btn-tracers" style="flex:1;">Tracers</button>
+                <button class="btn btn-sm" id="btn-reset-cam">Reset</button>
+              </div>
+              <div class="row">
+                <button class="btn btn-sm" id="btn-blind-mode" style="flex:1;">Blind: Observer</button>
+                <button class="btn btn-sm" id="btn-audio-toggle">Audio: Off</button>
+                <button class="btn btn-sm ${state.showCrosshairConfig ? 'btn-active' : ''}" id="btn-crosshair-cfg">XH</button>
+              </div>
+              <div class="row">
+                <span class="muted" style="font-size:11px;">Quality</span>
+                <select class="input" id="select-quality" style="flex:1; padding:3px 6px; font-size:11px;">
+                  <option value="auto" ${state.qualitySetting === 'auto' ? 'selected' : ''}>Auto (FPS Guard)</option>
+                  <option value="high" ${state.qualitySetting === 'high' ? 'selected' : ''}>High (2048px Shadows)</option>
+                  <option value="medium" ${state.qualitySetting === 'medium' ? 'selected' : ''}>Medium (512px Shadows)</option>
+                  <option value="low" ${state.qualitySetting === 'low' ? 'selected' : ''}>Low (Fastest / No Shadows)</option>
+                </select>
+                <span class="map-pill" id="quality-active-badge" style="font-size:10px;">AUTO · HIGH</span>
+              </div>
+              <div id="crosshair-cfg-slot"></div>
+            </div>
+            <div class="drawer-panel" id="bookmarks-drawer" style="display:${state.showBookmarks ? 'flex' : 'none'};">
+              <div class="card-title" style="margin:0;">Tick Bookmarks</div>
+              <form id="form-add-bookmark" class="bookmark-form-grid">
+                <div class="bookmark-form-row">
+                  <input class="input" id="input-bm-label" type="text" placeholder="Label (e.g. AWP entry)" required />
+                  <button class="btn btn-primary btn-sm" type="submit" id="btn-save-bookmark">Save</button>
+                </div>
+                <div class="bookmark-form-row">
+                  <input class="input" id="input-bm-note" type="text" placeholder="Optional note" />
+                </div>
+              </form>
+              <div id="bookmarks-list" style="display:flex; flex-direction:column; gap:5px;"></div>
+            </div>
+          </div>
+          <footer class="timeline-bar">
+            <div class="rounds-strip">
+              ${d.rounds
+                .map(
+                  (r) => `<button class="round-pill ${r.winner_team === 3 ? 'win-ct' : r.winner_team === 2 ? 'win-t' : ''} ${r.round_number === state.activeRoundNum ? 'active' : ''}" data-round="${r.round_number}" title="Round ${r.round_number}: ${esc(r.win_reason)}">R${r.round_number}</button>`
+                )
+                .join('')}
+            </div>
+            <div class="match-transport">
+              <label for="match-timeline-scrubber">Match timeline</label>
+              <input id="match-timeline-scrubber" type="range" min="${d.rounds[0]?.start_tick || 0}" max="${Math.max(d.rounds.at(-1)?.official_end_tick || 0, d.rounds.at(-1)?.end_tick || 0)}" />
+              <button class="btn btn-sm" id="btn-skip-back">−15 s</button>
+              <button class="btn btn-sm" id="btn-skip-fwd">+15 s</button>
+              <button class="btn btn-sm" id="btn-next-kill">Next kill</button>
+              <form class="match-go-to" id="form-go-to-tick">
+                <input class="input" id="input-go-to-tick" type="number" step="1" aria-label="Target tick" placeholder="Tick" required />
+                <button class="btn btn-sm" type="submit">Go to tick</button>
+              </form>
+            </div>
+            <div class="transport-row">
+              <button class="btn btn-primary btn-sm" id="btn-play" style="min-width:64px;">Play</button>
+              <button class="btn btn-sm" id="btn-step-back">-16t</button>
+              <button class="btn btn-sm" id="btn-step-back-1">-1t</button>
+              <button class="btn btn-sm" id="btn-step-fwd-1">+1t</button>
+              <button class="btn btn-sm" id="btn-step-fwd">+16t</button>
+              <select class="input" id="select-speed" style="padding:4px 8px;">
+                ${SPEEDS.map((s) => `<option value="${s}" ${state.playbackSpeed === s ? 'selected' : ''}>${s}x</option>`).join('')}
+              </select>
+              <div class="scrubber-wrap">
+                <div class="scrubber-markers" id="scrubber-markers"></div>
+                <input class="scrubber-input" type="range" id="timeline-scrubber" min="0" max="100" value="0" />
+              </div>
+              <span class="mono muted" id="hud-tick-label" style="min-width:185px; text-align:right;">Tick 0 · 0:00 / 0:00</span>
+            </div>
+          </footer>
         </div>
-      </footer>
+      </details>
     </main>
   `;
 }
@@ -1211,13 +1221,15 @@ function renderModals() {
     }
 
     const renderTeamTable = (title, cls, list, curScore, finalScore) => `
-      <div class="sb-team-hdr ${cls}">
-        <span>${title}</span>
-        <span>Round ${state.activeRoundNum}: ${curScore} · Match Final: ${finalScore}</span>
-      </div>
-      <table class="demo-table">
+      <section class="sb-team ${cls}">
+        <header class="sb-team-hdr ${cls}">
+          <span class="sb-team-score">${curScore}</span>
+          <span class="sb-team-name">${title}</span>
+          <span class="sb-team-final">Match Final: ${finalScore}</span>
+        </header>
+        <table class="sb-table">
         <thead>
-          <tr><th>Player</th><th>Status</th><th>K</th><th>A</th><th>D</th><th>HS%</th><th>ADR</th><th>DMG</th><th>$</th><th>EQ</th></tr>
+          <tr><th scope="col">Player</th><th scope="col">Money</th><th scope="col">K</th><th scope="col">A</th><th scope="col">D</th><th scope="col">HS%</th><th scope="col">ADR</th><th scope="col">Equip.</th></tr>
         </thead>
         <tbody>
           ${list
@@ -1227,40 +1239,44 @@ function renderModals() {
               const hp = live && live[0] === 1 ? Math.round(live[7]) : 0;
               const money = live && live.length > 15 ? Math.round(live[15] || 0) : 0;
               const eqVal = live && live.length > 18 ? Math.round(live[18] || 0) : 0;
-              return `<tr class="${alive ? '' : 'sb-row-dead'}">
-                <td style="font-weight:600;"><span class="muted mono">[${(p.slot + 1) % 10}]</span> ${esc(p.name)}</td>
-                <td class="mono">${alive ? `${hp} HP` : 'DEAD'}</td>
-                <td class="mono">${p.kills}</td>
-                <td class="mono">${p.assists}</td>
-                <td class="mono">${p.deaths}</td>
-                <td class="mono">${p.hs_pct.toFixed(0)}%</td>
-                <td class="mono">${p.adr.toFixed(1)}</td>
-                <td class="mono">${p.damage}</td>
-                <td class="mono">$${money}</td>
-                <td class="mono">$${eqVal}</td>
+              return `<tr class="${alive ? '' : 'sb-row-dead'} ${p.slot === state.povSlot && (state.cameraMode === 'pov' || state.cameraMode === 'chase') ? 'sb-observed' : ''}">
+                <td><span class="sb-player"><span class="sb-slot">${alive ? (p.slot + 1) % 10 : '×'}</span><span class="sb-player-name">${esc(p.name)}</span><span class="sb-player-hp">${alive ? hp : '—'}</span></span></td>
+                <td>$${money}</td>
+                <td>${p.kills}</td>
+                <td>${p.assists}</td>
+                <td>${p.deaths}</td>
+                <td>${p.hs_pct.toFixed(0)}%</td>
+                <td>${p.adr.toFixed(1)}</td>
+                <td>$${eqVal}</td>
               </tr>`;
             })
             .join('')}
         </tbody>
-      </table>
+        </table>
+      </section>
     `;
 
     const roundSum =
       state.activeDemo.rounds.find((r) => r.round_number === state.activeRoundNum) || rr?.summary;
-    const curCT = roundSum ? roundSum.score_ct : state.activeDemo.metadata.score_ct;
-    const curT = roundSum ? roundSum.score_t : state.activeDemo.metadata.score_t;
+    const inProgress = (sceneInstance?.currentTick ?? 0) < (roundSum?.end_tick ?? 0);
+    const curCT = roundSum ? Math.max(0, roundSum.score_ct - Number(inProgress && roundSum.winner_team === 3)) : state.activeDemo.metadata.score_ct;
+    const curT = roundSum ? Math.max(0, roundSum.score_t - Number(inProgress && roundSum.winner_team === 2)) : state.activeDemo.metadata.score_t;
     const final = matchFinalByCurrentSides(
       players, sceneInstance?.roundTeams || new Map(), state.activeDemo.metadata.score_ct, state.activeDemo.metadata.score_t,
     );
 
     html += `
       <div class="modal-backdrop" id="modal-scoreboard">
-        <div class="modal-card scoreboard-card">
-          <div class="card-title">
-            <span>5v5 Scoreboard · ${esc(state.activeDemo.metadata.map_name)} · Round ${state.activeRoundNum} (${curCT}:${curT}) · Match Final (${final.ct}:${final.t})</span>
-            <button class="btn btn-sm" id="btn-close-scoreboard">Close [Tab]</button>
-          </div>
+        <div class="scoreboard-card" role="dialog" aria-modal="true" aria-label="5v5 Scoreboard">
+          <header class="scoreboard-top">
+            <div><strong>5v5 Scoreboard</strong><span>Competitive | ${esc(state.activeDemo.metadata.map_name)}</span></div>
+            <div class="scoreboard-match-score"><b class="score-ct">${curCT}</b><span>Round ${state.activeRoundNum}</span><b class="score-t">${curT}</b></div>
+            <button class="scoreboard-close" id="btn-close-scoreboard" aria-label="Close scoreboard (Tab)">×</button>
+          </header>
           ${renderTeamTable('COUNTER-TERRORISTS', 'ct', ctList, curCT, final.ct)}
+          <div class="scoreboard-history" aria-label="Round history">${state.activeDemo.rounds.map((r) =>
+            `<span class="${r.round_number >= state.activeRoundNum ? '' : r.winner_team === 3 ? 'ct' : r.winner_team === 2 ? 't' : ''}${r.round_number === state.activeRoundNum ? ' current' : ''}" title="Round ${r.round_number}">${r.round_number}</span>`,
+          ).join('')}</div>
           ${renderTeamTable('TERRORISTS', 't', tList, curT, final.t)}
         </div>
       </div>
@@ -1344,7 +1360,7 @@ function render() {
 
   root.innerHTML = `
     <div class="app-shell">
-      ${renderTopbar()}
+      ${state.view === 'library' ? renderTopbar() : ''}
       ${state.view === 'library' ? renderLibraryView() : renderViewerView()}
       <div id="modals-root"></div>
     </div>
@@ -1501,6 +1517,8 @@ function renderCrosshairConfigSlot() {
 function mountAndBindViewer() {
   const stage = document.getElementById('three-stage');
   const overlay = document.getElementById('tags-overlay');
+  const demoTools = document.getElementById('demo-tools');
+  demoTools.addEventListener('toggle', () => { state.showDemoControls = demoTools.open; });
   const diagnostics = document.getElementById('render-diagnostics');
   const diagnosticsToggle = document.getElementById('btn-render-diagnostics');
   let lastDiagnosticsAt = -Infinity;
@@ -1790,6 +1808,17 @@ function bindModalHandlers() {
 // Global viewer hotkeys
 window.addEventListener('keydown', (e) => {
   if (state.view !== 'viewer' || !sceneInstance) return;
+  if (e.code === 'F2' && e.shiftKey) {
+    e.preventDefault();
+    const tools = document.getElementById('demo-tools');
+    if (tools && !e.repeat) tools.open = !tools.open;
+    return;
+  }
+  if (e.code === 'Escape' && state.showScoreboardModal) {
+    state.showScoreboardModal = false;
+    renderModalsDOM();
+    return;
+  }
   if (e.code === 'F3') {
     e.preventDefault();
     if (!e.repeat) document.getElementById('btn-render-diagnostics')?.click();

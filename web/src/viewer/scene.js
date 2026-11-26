@@ -344,6 +344,10 @@ function isPlaceholderCheckerboardTexture(tex) {
   }
 }
 
+function isAlivePlayer(p) {
+  return !!p && p[0] === 1 && (p[7] ?? 1) > 0;
+}
+
 function makeContactShadowTexture() {
   const c = document.createElement('canvas');
   c.width = 64;
@@ -2790,6 +2794,7 @@ export class DemoScene {
       let bones = null;
       let defuseKitMesh = null;
       let isRealOperator = false;
+      let missingModel = false;
 
       if (template) {
         const clone = SkeletonUtils.clone(template);
@@ -2816,40 +2821,8 @@ export class DemoScene {
         }
         bodyGroup.add(clone);
       } else {
-        const torso = new THREE.Mesh(
-          new THREE.CylinderGeometry(PLAYER_RADIUS * 0.85, PLAYER_RADIUS * 0.95, 46, 12),
-          solidMat
-        );
-        torso.position.y = 28;
-        bodyGroup.add(torso);
-
-        const headGroup = new THREE.Group();
-        headGroup.position.y = 60;
-        const head = new THREE.Mesh(new THREE.SphereGeometry(9.5, 12, 10), solidMat);
-        headGroup.add(head);
-
-        const barrel = new THREE.Mesh(
-          new THREE.BoxGeometry(3.5, 3.5, 28),
-          new THREE.MeshStandardMaterial({ color: 0x1e2533, roughness: 0.35 })
-        );
-        barrel.position.set(4, -5, -18);
-        headGroup.add(barrel);
-
-        const cone = new THREE.Mesh(
-          new THREE.ConeGeometry(5, 22, 8),
-          new THREE.MeshBasicMaterial({
-            color: 0xffffff,
-            transparent: true,
-            opacity: 0.3,
-            depthWrite: false,
-          })
-        );
-        cone.rotation.x = Math.PI / 2;
-        cone.position.set(0, 0, -22);
-        headGroup.add(cone);
-
-        bodyGroup.add(headGroup);
-        root.userData.headGroup = headGroup;
+        // No operator model on disk: draw nothing rather than a placeholder capsule
+        missingModel = true;
       }
       this.playerOutline.add(root, bodyGroup, team, defuseKitMesh);
 
@@ -2935,6 +2908,7 @@ export class DemoScene {
         labelEl,
         bones,
         isRealOperator,
+        missingModel,
         usedRealAnim: false,
         mixer: isRealOperator ? new THREE.AnimationMixer(bodyGroup.children[0]) : null,
         actions: new Map(),
@@ -3224,8 +3198,9 @@ export class DemoScene {
         povSlotChanged = true;
       }
     }
+    const observedAlive = isAlivePlayer(observedPlayer);
     if (this.cameraMode === 'pov') {
-      if (observedPlayer && observedPlayer[0] === 1) {
+      if (observedAlive) {
         this._deathCam = null;
       } else {
         const dEv = deathBySlot.get(observedSlot);
@@ -3237,7 +3212,7 @@ export class DemoScene {
           const curIdx = Math.max(0, frames.findIndex((f) => f.t >= tick));
           for (let fi = curIdx; fi >= 0; fi--) {
             const fp = frames[fi]?.p?.[observedSlot];
-            if (fp && fp[0] === 1) {
+            if (isAlivePlayer(fp)) {
               deathTick = frames[Math.min(frames.length - 1, fi + 1)]?.t ?? tick;
               break;
             }
@@ -3290,6 +3265,11 @@ export class DemoScene {
       const p = snap.players[slot];
       const deathEvent = deathBySlot.get(slot);
       const hideForPov = this.cameraMode === 'pov' && !deathCamActive && slot === observedSlot;
+      if (rig.missingModel) {
+        rig.root.visible = false;
+        if (rig.labelEl) rig.labelEl.style.display = 'none';
+        continue;
+      }
       rig.root.userData.outlined = p?.[0] === 1 && !hideForPov;
 
       if (!p || p[0] !== 1) {
@@ -3511,30 +3491,37 @@ export class DemoScene {
       this.camera.lookAt(look.x + dx * 36, look.y, look.z + dz * 36);
       this.viewModelGroup.visible = false;
     } else if (this.cameraMode === 'pov') {
-      if (deathCamActive && deathCamPos) {
+      if (!isAlivePlayer(observedPlayer)) this.viewModelGroup.visible = false;
+      const camAnchor =
+        deathCamPos ||
+        (observedPlayer ? [observedPlayer[2], observedPlayer[3], observedPlayer[4]] : null) ||
+        this._lastPovEye ||
+        null;
+      if (!isAlivePlayer(observedPlayer) && camAnchor) {
         this.viewModelGroup.visible = false;
         if (this.camera.fov !== WORLD_FOV_VERTICAL) {
           this.camera.fov = WORLD_FOV_VERTICAL;
           this.camera.updateProjectionMatrix();
         }
-        const [vx, vy, vz] = cs2ToThree(deathCamPos[0], deathCamPos[1], deathCamPos[2]);
+        const [vx, vy, vz] = cs2ToThree(camAnchor[0], camAnchor[1], camAnchor[2]);
         const yawVal = observedPlayer ? observedPlayer[5] : 0;
         const [lx, , lz] = cs2LookDirThree(yawVal, 0);
-        const ease = 1 - Math.pow(1 - Math.min(1, deathCamElapsed / 0.9), 2.5);
-        const dist = 20 + ease * 68;
-        const lookAt = (this._tmpDeathLook || (this._tmpDeathLook = new THREE.Vector3())).set(vx, vy + 20, vz);
+        const ease = deathCamActive ? 1 - Math.pow(1 - Math.min(1, deathCamElapsed / 0.9), 2.5) : 1;
+        const dist = 26 + ease * 78;
+        const lookAt = (this._tmpDeathLook || (this._tmpDeathLook = new THREE.Vector3())).set(vx, vy + 22, vz);
         const desiredCam = (this._tmpDeathCamPos || (this._tmpDeathCamPos = new THREE.Vector3())).set(
           vx - lx * dist,
-          vy + 32 + ease * 26,
+          vy + 34 + ease * 30,
           vz - lz * dist
         );
         this._clipSpectatorCamera(lookAt, desiredCam);
         this.camera.position.copy(desiredCam);
         this.camera.lookAt(lookAt);
-      } else if (observedPlayer && observedPlayer[0] === 1) {
+      } else if (isAlivePlayer(observedPlayer)) {
         const p = observedPlayer;
         const punchPitch = p[20] || 0;
         const punchYaw = p[21] || 0;
+        this._lastPovEye = [p[2], p[3], p[4]];
         const [ex, ey, ez] = playerEyePosThree(p[2], p[3], p[4], p[9]);
         const [dx, dy, dz] = cs2LookDirThree(p[5] + punchYaw * 0.65, p[6] + punchPitch * 0.65);
         this.camera.position.set(ex, ey, ez);
@@ -4015,7 +4002,7 @@ export class DemoScene {
       if (!el) continue;
 
       const isObservedPov = this.cameraMode === 'pov' && slot === snap.observedSlot;
-      if (!p || p[0] !== 1 || isObservedPov || !this.xray) {
+      if (!p || p[0] !== 1 || rig.missingModel || isObservedPov || !this.xray) {
         el.style.display = 'none';
         continue;
       }
@@ -4036,12 +4023,12 @@ export class DemoScene {
       visibleTags.push({ id: slot, rig, p, sx, sy });
     }
 
-    // Clamp tags inside safe stage bounds clearing radar (left 196px), top CS2 bar (98px), right overlay (324px), and bottom POV HUD
+    // Clamp tags inside the safe stage: radar (232px) left, native player cards top, killfeed right, POV clusters bottom
     const bounds = {
-      minX: 280,
-      maxX: Math.max(380, w - 404),
-      minY: 102,
-      maxY: Math.max(140, h - 88),
+      minX: 336,
+      maxX: Math.max(420, w - 424),
+      minY: 138,
+      maxY: Math.max(150, h - 100),
     };
     const placed = deoverlapScreenTags(visibleTags, 26, 152, 320, bounds);
     for (const item of placed) {

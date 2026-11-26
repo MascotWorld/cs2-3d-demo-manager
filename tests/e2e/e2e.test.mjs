@@ -49,7 +49,7 @@ async function waitForHealth(url, timeoutMs = 15000) {
 
 async function assertTagsAndHudClean(page, label) {
   const check = await page.evaluate(() => {
-    const hudSelectors = ['.radar-box', '#team-hud-ct', '#team-hud-t', '.right-overlay', '.round-clock-banner', '#flash-meter', '#pov-bottom-hud'];
+    const hudSelectors = ['.radar-box', '#team-hud-ct', '#team-hud-t', '.killfeed', '.round-clock-banner', '#flash-meter', '.pov-left-wing', '.pov-right-wing'];
     const hudRects = hudSelectors
       .map((sel) => {
         const el = document.querySelector(sel);
@@ -98,6 +98,123 @@ async function assertTagsAndHudClean(page, label) {
   assert.deepEqual(check.tagOverlaps, [], `${label} tag/HUD overlaps: ${check.tagOverlaps.join(', ')}`);
 }
 
+async function openDemoTools(page) {
+  const open = await page.evaluate(() => !!document.getElementById('demo-tools')?.open);
+  if (open) return;
+  await page.evaluate(() => {
+    const el = document.getElementById('demo-tools');
+    if (el) el.open = true;
+  });
+  await page.waitForFunction(() => document.getElementById('demo-tools')?.open === true);
+}
+
+async function seekTick(page, tick) {
+  const target = Math.round(tick);
+  await fillTool(page, '#input-go-to-tick', String(target));
+  await page.locator('#form-go-to-tick button').click();
+  await page.waitForFunction((t) => Math.abs(window.__CS2_SCENE__.currentTick - t) < 2, target);
+}
+
+async function clickTool(page, selector) {
+  await openDemoTools(page);
+  await page.click(selector);
+}
+
+async function fillTool(page, selector, value) {
+  await openDemoTools(page);
+  await page.locator(selector).fill(value);
+}
+
+async function ensureBookmarksDrawer(page) {
+  await openDemoTools(page);
+  const open = await page.evaluate(() => {
+    const el = document.getElementById('bookmarks-drawer');
+    return !!el && getComputedStyle(el).display !== 'none';
+  });
+  if (!open) await clickTool(page, '#btn-toggle-bookmarks');
+}
+
+async function shot(page, name) {
+  const wasOpen = await page.evaluate(() => !!document.getElementById('demo-tools')?.open);
+  if (wasOpen) {
+    await page.evaluate(() => {
+      const el = document.getElementById('demo-tools');
+      if (el) el.open = false;
+    });
+    await page.waitForTimeout(150);
+  }
+  await page.screenshot({ path: path.join(RENDERS_DIR, name) });
+  if (wasOpen) {
+    await page.evaluate(() => {
+      const el = document.getElementById('demo-tools');
+      if (el) el.open = true;
+    });
+  }
+}
+
+async function assertNativeHudLayout(page, mode) {
+  const layout = await page.evaluate(() => {
+    const rect = (sel) => {
+      const el = document.querySelector(sel);
+      if (!el || getComputedStyle(el).display === 'none') return null;
+      const r = el.getBoundingClientRect();
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+    };
+    const style = (sel, prop) => getComputedStyle(document.querySelector(sel))[prop];
+    const stage = document.querySelector('.stage-wrap').getBoundingClientRect();
+    const card = document.querySelector('#team-hud-ct .hud-player-row');
+    return {
+      stage: { width: stage.width, height: stage.height },
+      top: rect('.native-top-hud'),
+      ct: rect('#team-hud-ct'),
+      tteam: rect('#team-hud-t'),
+      clock: rect('.round-clock-banner'),
+      radar: rect('.radar-box'),
+      killfeed: rect('.killfeed'),
+      cards: document.querySelectorAll('#team-hud-ct .hud-player-row, #team-hud-t .hud-player-row').length,
+      card: card ? card.getBoundingClientRect().width : 0,
+      cardBg: style('#team-hud-ct .hud-player-frame', 'backgroundColor'),
+      cardRadius: style('#team-hud-ct .hud-player-frame', 'borderRadius'),
+      radarRadius: style('.radar-box', 'borderRadius'),
+      hudFont: style('.hud-player-name', 'fontFamily'),
+      digitsFont: style('#round-clock-text', 'fontFamily'),
+      nativeFonts: [...document.fonts].filter((f) => /CS2 HUD/.test(f.family) && f.status === 'loaded').map((f) => `${f.family} ${f.weight}`),
+      icons: document.querySelectorAll('.hud-player-weapon img, .hud-player-weapon svg').length,
+      nativeIcons: document.querySelectorAll('.hud-player-weapon img').length,
+      leftWing: rect('.pov-left-wing'),
+      rightWing: rect('.pov-right-wing'),
+      povHud: rect('#pov-bottom-hud'),
+      povRecording: !!window.__CS2_SCENE__?.roundReplay?.is_pov,
+    };
+  });
+  assert.equal(layout.cards, 10, 'Both team card rows must render five players each');
+  assert.ok(layout.card >= 46 && layout.card <= 80, `Teammate card width must match CS2 compact tiles, got ${layout.card}`);
+  assert.ok(layout.top && Math.abs((layout.top.left + layout.top.right) / 2 - layout.stage.width / 2) < 12,
+    'Top cards and clock must stay centered');
+  assert.ok(layout.ct.right <= layout.clock.left && layout.tteam.left >= layout.clock.right,
+    `Cards must flank the clock without overlap: ${JSON.stringify({ ct: layout.ct, clock: layout.clock, t: layout.tteam })}`);
+  assert.ok(layout.radar && layout.radar.width >= 150 && layout.radar.left <= 20 && layout.radar.top <= 20,
+    `Spectator radar must sit square in the top-left, got ${JSON.stringify(layout.radar)}`);
+  assert.equal(layout.cardRadius, '0px', 'Native teammate tiles are square');
+  assert.ok(layout.killfeed && layout.killfeed.right >= layout.stage.width - 20 && layout.killfeed.width < layout.stage.width * 0.5,
+    `Killfeed must hug the top-right corner, got ${JSON.stringify(layout.killfeed)}`);
+  assert.match(layout.hudFont, /CS2 HUD|Stratum2/, `HUD font stack must prefer the local CS2 face, got ${layout.hudFont}`);
+  assert.ok(layout.icons > 0, 'HUD must draw weapon icons for living players');
+  assert.ok(layout.nativeIcons > 0, 'HUD must serve the local Valve equipment icons when the assets are installed');
+  assert.ok(layout.nativeFonts.length >= 2, `Local CS2 fonts must load in the browser, got ${layout.nativeFonts.join(', ')}`);
+  if (mode === 'pov') {
+    assert.equal(layout.radarRadius, layout.povRecording ? '50%' : '0px',
+      `Radar shape follows the recording: round for POV recordings, square for GOTV (got ${layout.radarRadius} for pov=${layout.povRecording})`);
+    assert.ok(layout.leftWing && layout.leftWing.left < layout.stage.width * 0.45, 'Health cluster stays left of center');
+    assert.ok(layout.rightWing && layout.rightWing.right > layout.stage.width * 0.6, 'Ammo cluster stays right of center');
+    assert.ok(layout.leftWing.right < layout.rightWing.left || layout.leftWing.right < layout.stage.width * 0.55,
+      'Bottom center of the POV HUD must stay empty');
+  } else {
+    assert.equal(layout.radarRadius, '0px', 'Spectator (GOTV) radar is square');
+  }
+  return layout;
+}
+
 async function assertOperatorsAcrossHalftime(page, baseUrl, demoId) {
   const { rounds, players, metadata } = await (await fetch(`${baseUrl}/api/demos/${demoId}`)).json();
   const first = await (await fetch(`${baseUrl}/api/demos/${demoId}/rounds/${rounds[0].round_number}`)).json();
@@ -113,7 +230,7 @@ async function assertOperatorsAcrossHalftime(page, baseUrl, demoId) {
   }
   assert.ok(swapped, 'Replay fixture must include a halftime side swap');
   for (const [number, sides] of [[rounds[0].round_number, firstSides], [swapped.number, swapped.sides]]) {
-    await page.click(`.round-pill[data-round="${number}"]`);
+    await clickTool(page, `.round-pill[data-round="${number}"]`);
     await page.waitForFunction((n) => window.__CS2_SCENE__?.roundReplay?.summary?.round_number === n, number);
     const operators = await page.evaluate(() => window.__CS2_SCENE__.playerRigs.map((rig) => {
       let model = '';
@@ -127,13 +244,88 @@ async function assertOperatorsAcrossHalftime(page, baseUrl, demoId) {
       if (sides.has(slot)) assert.equal(model, sides.get(slot) === 3 ? 'ct' : 't', `Round ${number}, slot ${slot}`);
     }
     const final = matchFinalByCurrentSides(players, sides, metadata.score_ct, metadata.score_t);
-    await page.click('#btn-scoreboard');
+    await clickTool(page, '#btn-scoreboard');
     assert.match(await page.locator('.sb-team-hdr.ct').innerText(), new RegExp(`Match Final: ${final.ct}$`));
     assert.match(await page.locator('.sb-team-hdr.t').innerText(), new RegExp(`Match Final: ${final.t}$`));
     await page.click('#btn-close-scoreboard');
   }
-  await page.click(`.round-pill[data-round="${rounds[0].round_number}"]`);
+  await clickTool(page, `.round-pill[data-round="${rounds[0].round_number}"]`);
   await page.waitForFunction((n) => window.__CS2_SCENE__?.roundReplay?.summary?.round_number === n, rounds[0].round_number);
+}
+
+async function assertObservedPovDeath(page, replay) {
+  const tickRate = replay.tick_rate || 64;
+  const kill = replay.kills.find((k) => k.victim_slot >= 0 && replay.frames.some((f) => f.p?.[k.victim_slot]?.[0] === 1));
+  assert.ok(kill, 'Cache fixture must include a player kill');
+  const slot = kill.victim_slot;
+
+  await seekTick(page, kill.tick - tickRate * 0.5);
+  await page.evaluate((slot) => window.__CS2_SCENE__.setCameraMode('pov', slot), slot);
+  await page.waitForFunction((slot) => {
+    const s = window.__CS2_SCENE__;
+    return s.povSlot === slot && s.cameraMode === 'pov';
+  }, slot);
+  const before = await page.evaluate(() => ({
+    viewmodel: window.__CS2_SCENE__.viewModelGroup.visible,
+    hud: document.getElementById('pov-bottom-hud').innerText,
+  }));
+  assert.equal(before.viewmodel, true, 'POV viewmodel must be visible while the observed player is alive');
+  assert.ok(!/KILLED BY/i.test(before.hud), `Live POV HUD must not show a kill notice: ${before.hud}`);
+
+  await seekTick(page, kill.tick + tickRate * 0.4);
+  await page.waitForFunction((slot) => {
+    const s = window.__CS2_SCENE__;
+    const hud = document.getElementById('pov-bottom-hud');
+    return s.cameraMode === 'pov' && s.viewModelGroup.visible === false &&
+      hud && hud.style.display !== 'none' && /KILLED BY/i.test(hud.innerText);
+  }, slot);
+
+  const dead = await page.evaluate((slot) => {
+    const s = window.__CS2_SCENE__;
+    const rig = s.rigBySlot.get(slot);
+    const card = document.getElementById(`hud-player-${slot}`);
+    const label = rig?.labelEl;
+    return {
+      mode: s.cameraMode,
+      povSlot: s.povSlot,
+      viewmodel: s.viewModelGroup.visible,
+      camera: s.camera.position.toArray(),
+      bodyVisible: !!rig?.root.visible,
+      bodyHasModel: !!rig && !rig.missingModel && rig.bodyGroup.children.length > 0,
+      placeholders: s.playerRigs.filter((r) => r.missingModel).length,
+      bodyPos: rig?.root.position.toArray() || [0, 0, 0],
+      labelHidden: !label || label.style.display === 'none',
+      cardDead: !!card?.classList.contains('dead'),
+      cardWeapon: card?.querySelector('.hud-player-weapon')?.innerHTML.trim() || '',
+      cardGear: card?.querySelector('.hud-sq-gear')?.innerHTML.trim() || '',
+      cardHp: card?.querySelector('.hud-hp-num')?.textContent || '',
+      hudText: document.getElementById('pov-bottom-hud').innerText,
+      ammo: document.getElementById('pov-hud-ammo')?.innerText.trim() || '',
+    };
+  }, slot);
+
+  assert.equal(dead.mode, 'pov', 'Observed death must stay in spectator POV while the deathcam plays');
+  assert.equal(dead.viewmodel, false, 'Dead observed player must not keep a first-person viewmodel');
+  assert.ok(dead.ammo === '', `Deathcam HUD must not show the dead player's ammo: "${dead.ammo}"`);
+  assert.ok(dead.bodyVisible, 'Deathcam must show the falling third-person body');
+  assert.ok(dead.bodyHasModel, 'Deathcam body must be a real operator model, never a placeholder capsule');
+  assert.equal(dead.placeholders, 0, 'No placeholder capsule rigs may exist when operator assets are installed');
+  assert.ok(dead.labelHidden, 'Observed player world nametag must stay hidden in POV/deathcam');
+  assert.ok(dead.cardDead && dead.cardWeapon === '' && dead.cardGear === '' && dead.cardHp === '×',
+    `Dead scoreboard card must not hold a weapon: ${JSON.stringify({ dead: dead.cardDead, w: dead.cardWeapon, g: dead.cardGear, hp: dead.cardHp })}`);
+
+  const camDistance = Math.hypot(...dead.camera.map((c, i) => c - dead.bodyPos[i]));
+  assert.ok(camDistance > 30, `Deathcam camera must pull back from the death spot, got ${camDistance.toFixed(1)} units`);
+  await shot(page, '27-pov-deathcam.png');
+
+  await seekTick(page, kill.tick + tickRate * 3.6);
+  await page.waitForFunction((slot) => {
+    const s = window.__CS2_SCENE__;
+    return s.cameraMode !== 'pov' || (s.povSlot !== slot && s.viewModelGroup.visible === true);
+  }, slot);
+  const after = await page.evaluate(() => ({ mode: window.__CS2_SCENE__.cameraMode, povSlot: window.__CS2_SCENE__.povSlot }));
+  assert.ok(after.mode === 'pov' && after.povSlot !== undefined, 'Deathcam must hand off to a live teammate POV');
+  await clickTool(page, '#btn-cam-tactical');
 }
 
 async function assertExtendedReplay(page, baseUrl, cacheDemoId) {
@@ -144,12 +336,12 @@ async function assertExtendedReplay(page, baseUrl, cacheDemoId) {
   assert.ok(!firstReplay.is_pov, 'GOTV fixture must not be labeled a POV recording');
   const firstPlayer = firstReplay.frames[0].p.findIndex((p) => p?.[0] === 1);
 
-  await page.selectOption('#select-speed', '8');
+  await openDemoTools(page); await page.selectOption('#select-speed', '8');
   assert.equal(await page.evaluate(() => window.__CS2_SCENE__.playbackSpeed), 8);
-  await page.selectOption('#select-speed', '0.1');
+  await openDemoTools(page); await page.selectOption('#select-speed', '0.1');
   assert.equal(await page.evaluate(() => window.__CS2_SCENE__.playbackSpeed), 0.1);
-  await page.selectOption('#select-speed', '1');
-  await page.locator('#input-go-to-tick').fill(String(second.start_tick + 10));
+  await openDemoTools(page); await page.selectOption('#select-speed', '1');
+  await fillTool(page, '#input-go-to-tick', String(second.start_tick + 10));
   await page.locator('#form-go-to-tick button').click();
   await page.waitForFunction((num) => window.__CS2_SCENE__?.roundReplay?.round_number === num, second.round_number);
   assert.equal(await page.evaluate(() => window.__CS2_SCENE__.currentTick), second.start_tick + 10);
@@ -159,9 +351,9 @@ async function assertExtendedReplay(page, baseUrl, cacheDemoId) {
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }, first.start_tick + 100);
   await page.waitForFunction((num) => window.__CS2_SCENE__?.roundReplay?.round_number === num, first.round_number);
-  await page.click('#btn-next-kill');
+  await clickTool(page, '#btn-next-kill');
   assert.equal(await page.evaluate(() => window.__CS2_SCENE__.currentTick), firstReplay.kills[0].tick);
-  await page.click('#btn-skip-back');
+  await clickTool(page, '#btn-skip-back');
   assert.equal(await page.evaluate(() => window.__CS2_SCENE__.currentTick),
     Math.max(firstReplay.frames[0].t, firstReplay.kills[0].tick - 15 * firstReplay.tick_rate));
 
@@ -170,7 +362,7 @@ async function assertExtendedReplay(page, baseUrl, cacheDemoId) {
     s.currentTick = s.roundReplay.frames[0].t;
     s.setCameraMode('chase', slot);
   }, firstPlayer);
-  await page.click('#btn-spec-next');
+  await clickTool(page, '#btn-spec-next');
   const chase = await page.evaluate(() => {
     const s = window.__CS2_SCENE__;
     const p = s.roundReplay.frames[0].p[s.povSlot];
@@ -180,8 +372,8 @@ async function assertExtendedReplay(page, baseUrl, cacheDemoId) {
   const chaseButtonFits = await page.locator('#btn-cam-chase').evaluate((button) =>
     button.getBoundingClientRect().right <= button.closest('.cam-toolbar').getBoundingClientRect().right);
   assert.ok(chaseButtonFits, 'Chase must fit inside the camera toolbar');
-  await page.screenshot({ path: path.join(RENDERS_DIR, '22-match-transport-chase.png') });
-  await page.click('#btn-cam-tactical');
+  await shot(page, '22-match-transport-chase.png');
+  await clickTool(page, '#btn-cam-tactical');
 
   const hurt = firstReplay.hurts.find((event) => event.attacker_slot >= 0 && event.dmg_hp > 0 &&
     firstReplay.frames.findLast((frame) => frame.t <= event.tick)?.p[event.attacker_slot]?.[0] === 1);
@@ -193,7 +385,8 @@ async function assertExtendedReplay(page, baseUrl, cacheDemoId) {
   }, { tick: hurt.tick, slot: hurt.attacker_slot });
   await page.locator('#pov-damage').waitFor();
   assert.match(await page.locator('#pov-damage').innerText(), /HP DEALT/);
-  await page.screenshot({ path: path.join(RENDERS_DIR, '24-pov-damage.png') });
+  await shot(page, '24-pov-damage.png');
+  await assertObservedPovDeath(page, firstReplay);
 
   const clipNames = new Set(await page.evaluate(() => [...window.__CS2_SCENE__.operatorClips.keys()]));
   let reload;
@@ -219,15 +412,15 @@ async function assertExtendedReplay(page, baseUrl, cacheDemoId) {
   }, reload);
   await page.waitForFunction((clip) => window.__CS2_VIEWER__?.viewModelClip === clip, reload.clip);
 
-  await page.click('#btn-cam-tactical');
+  await clickTool(page, '#btn-cam-tactical');
   await page.evaluate(() => {
     const s = window.__CS2_SCENE__;
     s.currentTick = s.roundReplay.summary.end_tick;
   });
   await page.locator('#round-end-banner').waitFor();
-  assert.match(await page.locator('#round-end-banner').innerText(), /Win/);
+  assert.match(await page.locator('#round-end-banner').innerText(), /win/i);
   if (firstReplay.mvp) assert.match(await page.locator('#round-end-banner').innerText(), /MVP:/);
-  await page.screenshot({ path: path.join(RENDERS_DIR, '23-round-end.png') });
+  await shot(page, '23-round-end.png');
 
   await page.evaluate(() => {
     const s = window.__CS2_SCENE__;
@@ -235,7 +428,7 @@ async function assertExtendedReplay(page, baseUrl, cacheDemoId) {
     s.playing = true;
   });
   await page.waitForFunction((num) => window.__CS2_SCENE__?.roundReplay?.round_number === num && window.__CS2_SCENE__.playing, second.round_number);
-  await page.click(`.round-pill[data-round="${first.round_number}"]`);
+  await clickTool(page, `.round-pill[data-round="${first.round_number}"]`);
   await page.waitForFunction((num) => window.__CS2_SCENE__?.roundReplay?.round_number === num, first.round_number);
 }
 
@@ -395,7 +588,7 @@ async function run() {
     await page.selectOption('#select-map-filter', '');
     await page.waitForFunction(() => document.querySelectorAll('[data-demo-row]').length === 2);
 
-    await page.screenshot({ path: path.join(RENDERS_DIR, '01-library.png') });
+    await shot(page, '01-library.png');
 
     // 2. Open de_cache in 3D Replay Viewer
     console.log('Opening de_cache in 3D viewer...');
@@ -417,11 +610,34 @@ async function run() {
       { timeout: 45000 }
     );
 
+    // 2a. Game frame fills the stage while demo tooling stays collapsed in a tray
+    const trayState = await page.evaluate(() => {
+      const details = document.getElementById('demo-tools');
+      const stage = document.querySelector('.stage-wrap').getBoundingClientRect();
+      const canvas = document.getElementById('three-stage').getBoundingClientRect();
+      return { open: !!details?.open, canvasHeight: canvas.height, stageHeight: stage.height };
+    });
+    assert.equal(trayState.open, false, 'Demo tooling tray must start collapsed');
+    assert.ok(Math.abs(trayState.canvasHeight - trayState.stageHeight) < 2, `Game canvas must fill the stage: ${JSON.stringify(trayState)}`);
+    await page.keyboard.press('Shift+F2');
+    await page.waitForFunction(() => document.getElementById('demo-tools')?.open === true);
+    const trayGeometry = await page.evaluate(() => {
+      const stage = document.querySelector('.stage-wrap').getBoundingClientRect();
+      const tray = document.getElementById('demo-tools').getBoundingClientRect();
+      return { stageBottom: stage.bottom, trayTop: tray.top, trayHeight: tray.height };
+    });
+    assert.ok(trayGeometry.trayHeight > 40 && trayGeometry.trayTop >= trayGeometry.stageBottom - 1,
+      `Open tray must sit outside the game frame: ${JSON.stringify(trayGeometry)}`);
+    await page.keyboard.press('Shift+F2');
+    await page.waitForFunction(() => document.getElementById('demo-tools')?.open === false);
+    await openDemoTools(page);
+
     const hintHeight = await page.evaluate(() => document.querySelector('.cam-toolbar-hdr .shortcuts-hint')?.getBoundingClientRect().height || 0);
     assert.ok(hintHeight > 0 && hintHeight < 22, `Expected single-line hint, got ${hintHeight}px`);
     await page.waitForTimeout(200);
     await assertTagsAndHudClean(page, '02-viewer-tactical');
-    await page.screenshot({ path: path.join(RENDERS_DIR, '02-viewer-tactical.png') });
+    await assertNativeHudLayout(page, 'tactical');
+    await shot(page, '02-viewer-tactical.png');
     await page.keyboard.press('F3');
     await page.waitForFunction(() => {
       const panel = document.getElementById('render-diagnostics');
@@ -434,7 +650,7 @@ async function run() {
     }));
     assert.equal(diagnostics.warning, diagnostics.software);
     assert.ok(diagnostics.renderer);
-    await page.screenshot({ path: path.join(RENDERS_DIR, '20-render-diagnostics.png') });
+    await shot(page, '20-render-diagnostics.png');
     await page.keyboard.press('F3');
     assert.ok(await page.locator('#render-diagnostics').isHidden());
     await assertOccludedOutlinePixels(page);
@@ -476,7 +692,7 @@ async function run() {
     assert.ok(combatSweep.maxHandWeapErr < 0.25, `Weapon must stay locked to hand_R palm, max error=${combatSweep.maxHandWeapErr}`);
     await page.waitForTimeout(150);
     await assertTagsAndHudClean(page, '13-cache-combat-tactical');
-    await page.screenshot({ path: path.join(RENDERS_DIR, '13-cache-combat-tactical.png') });
+    await shot(page, '13-cache-combat-tactical.png');
 
     // 3. Scan de_cache rounds for: multi-smoke + inferno, active HE + inferno, peak flash, and sniper scope
     const demoDetail = await (await fetch(`${BASE_URL}/api/demos/${cacheDemoId}`)).json();
@@ -534,7 +750,7 @@ async function run() {
 
     // 4. Switch to smoke action round, verify header sync, frame active smokes in Tactical Orbit, capture 03
     console.log(`Switching to smoke round ${smokeRound} (tick=${smokeFocus.tick})...`);
-    await page.click(`.round-pill[data-round="${smokeRound}"]`);
+    await clickTool(page, `.round-pill[data-round="${smokeRound}"]`);
     await page.waitForFunction((rNum) => document.getElementById('match-scoreboard-strip')?.textContent.includes(`Round ${rNum}/`), smokeRound);
 
     await page.evaluate(({ tick, pos }) => {
@@ -554,27 +770,27 @@ async function run() {
     await page.waitForFunction(() => window.__CS2_VIEWER__.activeSmokes > 0, null, { timeout: 5000 });
     await page.waitForTimeout(200);
     await assertTagsAndHudClean(page, '03-viewer-smoke-action');
-    await page.screenshot({ path: path.join(RENDERS_DIR, '03-viewer-smoke-action.png') });
-    await page.click('[data-cam-mode="tactical"]');
+    await shot(page, '03-viewer-smoke-action.png');
+    await clickTool(page, '[data-cam-mode="tactical"]');
 
     // 5. Test -1t / +1t stepping and Play/Pause
     const t0 = await page.evaluate(() => window.__CS2_VIEWER__.currentTick);
-    await page.click('#btn-step-fwd-1');
+    await clickTool(page, '#btn-step-fwd-1');
     await page.waitForFunction((prev) => window.__CS2_VIEWER__.currentTick === prev + 1, t0);
-    await page.click('#btn-step-back-1');
+    await clickTool(page, '#btn-step-back-1');
     await page.waitForFunction((prev) => window.__CS2_VIEWER__.currentTick === prev, t0);
 
     // 6. Test 5v5 Tab Scoreboard clearly showing both Round Score and Match Final
     await page.keyboard.press('Tab');
     await page.waitForSelector('#modal-scoreboard');
     const sbText = await page.locator('#modal-scoreboard').innerText();
-    assert.ok(sbText.includes('Match Final') && sbText.includes(`Round ${smokeRound}`), `Scoreboard must clarify Round vs Match Final, got: ${sbText.slice(0, 180)}`);
-    await page.screenshot({ path: path.join(RENDERS_DIR, '06-scoreboard-tab.png') });
+    assert.ok(/match final/i.test(sbText) && new RegExp(`round ${smokeRound}\\b`, 'i').test(sbText), `Scoreboard must clarify Round vs Match Final, got: ${sbText.slice(0, 180)}`);
+    await shot(page, '06-scoreboard-tab.png');
     await page.keyboard.press('Tab');
     await page.waitForFunction(() => !document.getElementById('modal-scoreboard'));
 
     // 7. Test 1st-Person POV + Observer Flash Meter + 1:1 CS2 Blind + POV->Free Cam right on active flash tick
-    await page.click(`.round-pill[data-round="${flashTarget.round}"]`);
+    await clickTool(page, `.round-pill[data-round="${flashTarget.round}"]`);
     await page.waitForFunction((rNum) => document.getElementById('match-scoreboard-strip')?.textContent.includes(`Round ${rNum}/`), flashTarget.round);
     await page.click(`#hud-player-${flashTarget.slot}`);
     await page.waitForFunction((s) => window.__CS2_VIEWER__.cameraMode === 'pov' && window.__CS2_VIEWER__.povSlot === s, flashTarget.slot);
@@ -593,17 +809,18 @@ async function run() {
     assert.ok(meterText.includes(expectedName), `Flash meter "${meterText}" must match slot ${flashTarget.slot} "${expectedName}"`);
     await page.waitForTimeout(150);
     await assertTagsAndHudClean(page, '04-viewer-pov');
-    await page.screenshot({ path: path.join(RENDERS_DIR, '04-viewer-pov.png') });
+    await assertNativeHudLayout(page, 'pov');
+    await shot(page, '04-viewer-pov.png');
 
     // Capture 1:1 CS2 Blind white screen at active flash tick
-    await page.click('#btn-blind-mode');
+    await clickTool(page, '#btn-blind-mode');
     await page.waitForFunction(() => parseFloat(document.getElementById('flash-blind-full')?.style.opacity || '0') > 0.55);
     await page.waitForTimeout(120);
-    await page.screenshot({ path: path.join(RENDERS_DIR, '10-viewer-blind-cs2.png') });
+    await shot(page, '10-viewer-blind-cs2.png');
 
     // Switch POV -> Free Cam RIGHT ON THE ACTIVE FLASH TICK (no tick change!) and assert flash overlays clear immediately
     const flashTickCheck = await page.evaluate(() => window.__CS2_VIEWER__.currentTick);
-    await page.click('[data-cam-mode="free"]');
+    await clickTool(page, '[data-cam-mode="free"]');
     await page.waitForFunction((expectedTick) => {
       const v = window.__CS2_VIEWER__;
       const m = document.getElementById('flash-meter');
@@ -624,11 +841,11 @@ async function run() {
     await page.keyboard.up('KeyW');
     await page.waitForTimeout(150);
     await assertTagsAndHudClean(page, '05-viewer-freecam');
-    await page.screenshot({ path: path.join(RENDERS_DIR, '05-viewer-freecam.png') });
-    await page.click('#btn-blind-mode'); // reset blind mode to observer
+    await shot(page, '05-viewer-freecam.png');
+    await clickTool(page, '#btn-blind-mode'); // reset blind mode to observer
 
     // 8. Capture 09: sniper scope overlay and projected world FOV.
-    await page.click(`.round-pill[data-round="${scopeTarget.round}"]`);
+    await clickTool(page, `.round-pill[data-round="${scopeTarget.round}"]`);
     await page.waitForFunction((rNum) => document.getElementById('match-scoreboard-strip')?.textContent.includes(`Round ${rNum}/`), scopeTarget.round);
     await page.click(`#hud-player-${scopeTarget.slot}`);
     await page.evaluate((t) => {
@@ -648,11 +865,11 @@ async function run() {
     assert.equal(scope.fov, cs2FovToVertical(povCameraFov(scope.weapon, scope.zoom)));
     assert.equal(scope.viewmodelVisible, false);
     await page.waitForTimeout(150);
-    await page.screenshot({ path: path.join(RENDERS_DIR, '09-viewer-scope.png') });
+    await shot(page, '09-viewer-scope.png');
 
     // 9. Capture 11: Active HE explosion + Molotov/Inferno
-    await page.click('[data-cam-mode="tactical"]');
-    await page.click(`.round-pill[data-round="${heMollyTarget.round}"]`);
+    await clickTool(page, '[data-cam-mode="tactical"]');
+    await clickTool(page, `.round-pill[data-round="${heMollyTarget.round}"]`);
     await page.waitForFunction((rNum) => document.getElementById('match-scoreboard-strip')?.textContent.includes(`Round ${rNum}/`), heMollyTarget.round);
     await page.evaluate(({ tick, pos }) => {
       const sc = document.getElementById('timeline-scrubber');
@@ -662,19 +879,21 @@ async function run() {
     }, heMollyTarget);
     await page.waitForFunction(() => window.__CS2_VIEWER__.activeGrenades > 0 && window.__CS2_VIEWER__.activeInfernos > 0);
     await page.waitForTimeout(150);
-    await page.screenshot({ path: path.join(RENDERS_DIR, '11-viewer-he-molotov.png') });
+    await shot(page, '11-viewer-he-molotov.png');
 
     // 10. Bookmark persistence & header sync
     const bmTick = await page.evaluate(() => window.__CS2_VIEWER__.currentTick);
     const bmRoundText = await page.locator('#match-scoreboard-strip').innerText();
+    await ensureBookmarksDrawer(page);
     await page.fill('#input-bm-label', 'HE + Molly Action');
     await page.fill('#input-bm-note', 'E2E verified');
-    await page.click('#btn-save-bookmark');
+    await clickTool(page, '#btn-save-bookmark');
     await page.waitForSelector('.bookmark-item');
 
     await page.reload({ waitUntil: 'networkidle' });
     await page.locator('[data-demo-row]', { hasText: 'de_cache' }).locator('[data-open-demo]').click();
     await page.waitForFunction(() => window.__CS2_VIEWER__?.mapSource === 'custom_glb', null, { timeout: 35000 });
+    await ensureBookmarksDrawer(page);
     await page.waitForSelector('.bookmark-item', { timeout: 20000 });
     await page.locator('[data-jump-bm]').first().click();
     await page.waitForFunction((expectedTick) => Math.abs((window.__CS2_VIEWER__?.currentTick ?? -1) - expectedTick) <= 2, bmTick);
@@ -682,7 +901,7 @@ async function run() {
 
     // 11. Real de_nuke.glb (official CS2 PBR textures) + Real de_nuke_radar.png + CT/T Operators + POV weapon + close-up
     console.log('Testing de_nuke.glb real CS2 textures, operators, weapons, and radar...');
-    await page.click('#btn-back-library');
+    await clickTool(page, '#btn-back-library');
     const nukeOpenBtn = page.locator('[data-demo-row]', { hasText: 'de_nuke' }).locator('[data-open-demo]');
     const nukeDemoId = await nukeOpenBtn.getAttribute('data-open-demo');
     await nukeOpenBtn.click();
@@ -702,7 +921,7 @@ async function run() {
     );
     await page.waitForTimeout(350);
     await assertTagsAndHudClean(page, '07-nuke-glb-tactical');
-    await page.screenshot({ path: path.join(RENDERS_DIR, '07-nuke-glb-tactical.png') });
+    await shot(page, '07-nuke-glb-tactical.png');
     await assertOperatorsAcrossHalftime(page, BASE_URL, nukeDemoId);
     const spawnAim = await page.evaluate(() => {
       const s = window.__CS2_SCENE__;
@@ -759,7 +978,7 @@ async function run() {
       }
     });
     await page.waitForTimeout(250);
-    await page.screenshot({ path: path.join(RENDERS_DIR, '14-pistol-grip-closeup.png') });
+    await shot(page, '14-pistol-grip-closeup.png');
 
     // Switch to POV pistol on Round 1 (08-nuke-glb-pov.png) so both rifle POV (04) and pistol POV (08) are verified
     const nukePovTarget = await page.evaluate(() => {
@@ -798,11 +1017,11 @@ async function run() {
     assert.ok(povChecks.vmKey && povChecks.vmKey !== 'none', `Expected real POV weapon view-model key, got: ${povChecks.vmKey}`);
     assert.ok(povChecks.vmRealVisible, 'Expected real weapon GLB visible in 1st-person POV');
     assert.ok(povChecks.povArmsVisible, 'Expected real operator first-person arms/gloves visible in 1st-person POV');
-    await page.screenshot({ path: path.join(RENDERS_DIR, '08-nuke-glb-pov.png') });
+    await shot(page, '08-nuke-glb-pov.png');
 
     // Switch to a buy round (e.g. Round 4) if present so 12-operators-weapons-closeup shows an unobstructed two-handed rifle
     if (await page.locator('.round-pill[data-round="4"]').count()) {
-      await page.click('.round-pill[data-round="4"]');
+      await clickTool(page, '.round-pill[data-round="4"]');
       await page.waitForFunction(() => document.getElementById('match-scoreboard-strip')?.textContent.includes('Round 4/'));
     }
 
@@ -896,7 +1115,7 @@ async function run() {
     assert.ok(renderMetrics.shadowEnabled, 'Directional sun shadow map must be enabled');
     assert.ok(renderMetrics.skyboxActive, 'Real CS2 skybox texture must be active');
     assert.ok(renderMetrics.fps >= 30, `Expected >= 30 FPS in headless Chrome, got ${renderMetrics.fps}`);
-    await page.screenshot({ path: path.join(RENDERS_DIR, '12-operators-weapons-closeup.png') });
+    await shot(page, '12-operators-weapons-closeup.png');
 
     // 11b. Atomic POV switching across 5 slots + POV weapon close-ups (AK, M4, AWP, Knife) + >=3.2s Deathcam
     const povAtomic = await page.evaluate(() => {
@@ -999,7 +1218,7 @@ async function run() {
         camMode: window.__CS2_VIEWER__.cameraMode,
       }));
       assert.equal(midDeathCheck.povSlot, povSamples.death.victimSlot, 'Deathcam must remain on dead victim during >=3s window');
-      await page.screenshot({ path: path.join(RENDERS_DIR, '19-deathcam-fall.png') });
+      await shot(page, '19-deathcam-fall.png');
 
       // Step past 3.2s -> must switch to an alive teammate, NEVER the killer
       await page.evaluate((d) => {
@@ -1021,7 +1240,7 @@ async function run() {
     }
 
     // 12. Delete de_nuke from Library & verify persistence
-    await page.click('#btn-back-library');
+    await clickTool(page, '#btn-back-library');
     await page.waitForFunction(() => document.querySelectorAll('[data-demo-row]').length === 2);
     await page.locator('[data-demo-row]', { hasText: 'de_nuke' }).locator('[data-delete-demo]').click();
     await page.waitForFunction(() => document.querySelectorAll('[data-demo-row]').length === 1);
@@ -1048,14 +1267,14 @@ async function run() {
     await page.waitForFunction(() => window.__CS2_VIEWER__?.cameraMode === 'pov');
     await page.waitForFunction(() => document.getElementById('round-clock-phase').textContent === 'TIMEOUT · CT');
     assert.match(await page.locator('#match-scoreboard-strip').innerText(), /OT 1/);
-    await page.screenshot({ path: path.join(RENDERS_DIR, '25-pov-recording-warning.png') });
+    await shot(page, '25-pov-recording-warning.png');
     await page.evaluate(() => {
       const s = window.__CS2_SCENE__;
       s.currentTick = s.roundReplay.summary.end_tick;
     });
     await page.locator('#round-end-banner').waitFor();
     assert.match(await page.locator('#round-end-banner').innerText(), /MVP:/);
-    await page.screenshot({ path: path.join(RENDERS_DIR, '26-round-end-mvp-fixture.png') });
+    await shot(page, '26-round-end-mvp-fixture.png');
     await page.unroute(povFixture);
 
     assert.deepEqual(pageErrors, [], `Unexpected page errors: ${pageErrors.join('; ')}`);

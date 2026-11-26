@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"cs2-3d-demo-manager/internal/parser"
@@ -250,4 +251,105 @@ func TestServerAPIEndToEnd(t *testing.T) {
 		t.Fatalf("delete demo failed: %v %v", res, err)
 	}
 	res.Body.Close()
+}
+
+func TestHUDAssetAPI(t *testing.T) {
+	tmp := t.TempDir()
+	assetsDir := filepath.Join(tmp, "assets")
+	for name, content := range map[string]string{
+		"fonts/stratum2-regular.otf":          "font-bytes",
+		"fonts/stratum2bold_monodigit.ttf":    "digits-bytes",
+		"icons/equipment/ak47.svg":            `<svg xmlns="http://www.w3.org/2000/svg"></svg>`,
+		"icons/deathnotice/icon_headshot.svg": `<svg xmlns="http://www.w3.org/2000/svg"></svg>`,
+		"icons/hud/health_cross.svg":          `<svg xmlns="http://www.w3.org/2000/svg"></svg>`,
+		"icons/equipment/readme.txt":          "not an icon",
+		"secret.html":                         "<html></html>",
+	} {
+		p := filepath.Join(assetsDir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	st, err := store.Open(filepath.Join(tmp, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	srv := New(Config{Store: st, AssetDirs: []string{assetsDir}})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	get := func(path string) (*http.Response, string) {
+		res, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(res.Body)
+		res.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res, string(body)
+	}
+
+	for _, tc := range []struct{ path, wantType, wantBody string }{
+		{"/api/assets/hud/fonts/stratum2-regular.otf", "font/otf", "font-bytes"},
+		{"/api/assets/hud/fonts/stratum2bold_monodigit.ttf", "font/ttf", "digits-bytes"},
+		{"/api/assets/hud/equipment/ak47.svg", "image/svg+xml", "<svg"},
+		{"/api/assets/hud/deathnotice/icon_headshot.svg", "image/svg+xml", "<svg"},
+		{"/api/assets/hud/hud/health_cross.svg", "image/svg+xml", "<svg"},
+	} {
+		res, body := get(tc.path)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status %d", tc.path, res.StatusCode)
+		}
+		if got := res.Header.Get("Content-Type"); got != tc.wantType {
+			t.Fatalf("%s: content type %q", tc.path, got)
+		}
+		if !strings.Contains(body, tc.wantBody) {
+			t.Fatalf("%s: body %q", tc.path, body)
+		}
+		if res.Header.Get("X-Content-Type-Options") != "nosniff" {
+			t.Fatalf("%s: missing nosniff", tc.path)
+		}
+	}
+
+	for _, path := range []string{
+		"/api/assets/hud/equipment/readme.txt",
+		"/api/assets/hud/scripts/ak47.svg",
+		"/api/assets/hud/fonts/%2e%2e%2fsecret.html",
+		"/api/assets/hud/fonts/../../secret.html",
+		"/api/assets/hud/equipment/missing.svg",
+	} {
+		res, _ := get(path)
+		if res.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s: expected 404, got %d", path, res.StatusCode)
+		}
+	}
+
+	healthRes, healthBody := get("/api/health")
+	if healthRes.StatusCode != http.StatusOK {
+		t.Fatalf("health status %d", healthRes.StatusCode)
+	}
+	var health struct {
+		HUDAssets []string `json:"hud_assets"`
+	}
+	if err := json.Unmarshal([]byte(healthBody), &health); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"deathnotice/icon_headshot.svg",
+		"equipment/ak47.svg",
+		"fonts/stratum2-regular.otf",
+		"fonts/stratum2bold_monodigit.ttf",
+		"hud/health_cross.svg",
+	}
+	if strings.Join(health.HUDAssets, ",") != strings.Join(want, ",") {
+		t.Fatalf("hud_assets = %v", health.HUDAssets)
+	}
 }
