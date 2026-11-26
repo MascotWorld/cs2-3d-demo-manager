@@ -1,0 +1,31 @@
+# Build & dependencies
+/bin/
+/cs2-demo-manager
+/web/node_modules/
+/web/dist/
+.env
+.env.*
+
+# Runtime data & local demo caches
+/data/
+*.db
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Local demo / asset files (never commit private demos or Valve assets)
+*.dem
+*.dem.bz2
+*.glb
+*.gltf
+*.vpk
+*.vmdl_c
+*.vtex_c
+geo_*.bin
+geo_*.bin.gz
+/assets/
+
+# Test / verification artifacts
+/tests/e2e/screenshots/
+/output/
+.DS_Store
