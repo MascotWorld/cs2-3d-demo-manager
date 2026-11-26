@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { MeshBVH } from 'three-mesh-bvh';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
@@ -1131,7 +1132,6 @@ export class DemoScene {
     this._smokeNoiseTexture?.dispose();
     this.playerOutline.dispose();
     this.mapCollision?.geometry.dispose();
-    this.mapCollision?.material.dispose();
     this.renderer.dispose();
     if (dom.parentNode) dom.parentNode.removeChild(dom);
     if (typeof window !== 'undefined') {
@@ -1489,13 +1489,11 @@ export class DemoScene {
     const skyboxPromise = this.setMapSkybox(skyboxUrl);
     const parsedRef = meshBuffer ? parseCsmsh1(meshBuffer) : null;
     this.mapCollision?.geometry.dispose();
-    this.mapCollision?.material.dispose();
     this.mapCollision = null;
     if (parsedRef) {
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.BufferAttribute(parsedRef.positions, 3));
-      geometry.computeBoundingBox();
-      this.mapCollision = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+      this.mapCollision = new MeshBVH(geometry);
     }
 
     if (customGlbUrl) {
@@ -2364,8 +2362,10 @@ export class DemoScene {
     ray.set(origin, direction.divideScalar(distance));
     ray.near = 4;
     ray.far = distance;
-    const hits = this.mapCollision ? ray.intersectObject(this.mapCollision, false) : ray.intersectObjects(this.mapGroup.children, true);
-    if (hits.length) target.copy(origin).addScaledVector(direction, Math.max(2, hits[0].distance - 6));
+    const hit = this.mapCollision
+      ? this.mapCollision.raycastFirst(ray.ray, THREE.DoubleSide, ray.near, ray.far)
+      : ray.intersectObjects(this.mapGroup.children, true)[0];
+    if (hit) target.copy(origin).addScaledVector(direction, Math.max(2, hit.distance - 6));
   }
 
   focusWorldPoint(cs2x, cs2y, cs2z, distance = 900) {
