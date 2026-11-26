@@ -7,6 +7,10 @@ import {
   playerBodyHeight,
   lerpAngleDeg,
   findFrameIndex,
+  activeFlagStart,
+  cycleAliveSlot,
+  matchFinalByCurrentSides,
+  roundAtTick,
   interpolateFrames,
   smokeEnvelope,
   parseCsmsh1,
@@ -256,6 +260,56 @@ test('deoverlapScreenTags separates 5 clustered spawn tags and clamps inside saf
       assert.ok(dx >= 116 || dy >= 24, `tags ${i} and ${j} overlap: dx=${dx}, dy=${dy}`);
     }
   }
+});
+
+test('match seeks and alive spectator cycling preserve stable player slots', () => {
+  const rounds = [{start_tick: 65, round_number: 1}, {start_tick: 1280, round_number: 2}];
+  assert.equal(roundAtTick(rounds, 0).round_number, 1);
+  assert.equal(roundAtTick(rounds, 1279).round_number, 1);
+  assert.equal(roundAtTick(rounds, 1280).round_number, 2);
+  assert.equal(roundAtTick([], 1280), null);
+  const players = [[1], [0], null, [1], [0]];
+  assert.equal(cycleAliveSlot(players, 0, 1), 3);
+  assert.equal(cycleAliveSlot(players, 0, -1), 3);
+  assert.equal(cycleAliveSlot(players, 3, 1), 0);
+  assert.equal(cycleAliveSlot([[0], null], 0, 1), -1);
+  assert.deepEqual(matchFinalByCurrentSides([{slot: 0, team: 2}, {slot: 1, team: 3}], new Map([[0, 3], [1, 2]]), 13, 9), {ct: 9, t: 13});
+});
+
+test('clock infers POV bomb actions, distinct timeout spans, and round-over state', () => {
+  const player = (flag, weapon = 0) => {
+    const p = Array(15).fill(0);
+    p[0] = 1;
+    p[13] = weapon;
+    p[14] = flag;
+    return p;
+  };
+  const rr = {
+    summary: {start_tick: 64, freeze_end_tick: 64 * 46, winner_team: 3, end_tick: 64 * 76},
+    pauses: [{tick: 64 * 6, kind: 'timeout', team: 3, seconds_left: 30}, {tick: 64 * 36, kind: ''}],
+    frames: [
+      {t: 64 * 47, p: [player(0), player(0)]},
+      {t: 64 * 48, p: [player(16), player(0)]},
+      {t: 64 * 49, p: [player(16), player(0)]},
+      {t: 64 * 52, b: [0, 0, 0, -1, 3], p: [player(0), player(0)]},
+      {t: 64 * 55, b: [0, 0, 0, -1, 3], p: [player(0), player(8 | 2)]},
+      {t: 64 * 56, b: [0, 0, 0, -1, 3], p: [player(0), player(8 | 2)]},
+      {t: 64 * 68, p: [player(32), null]},
+      {t: 64 * 69, p: [player(32, 1), null]},
+    ],
+  };
+  assert.equal(computeRoundClock(rr, 64 * 2).clockText, '0:14');
+  assert.equal(computeRoundClock(rr, 64 * 16).clockText, '0:20');
+  assert.equal(computeRoundClock(rr, 64 * 16).team, 3);
+  assert.equal(computeRoundClock(rr, 64 * 40).clockText, '0:06');
+  assert.equal(computeRoundClock(rr, 64 * 49).action.startTick, 64 * 48);
+  const defuse = computeRoundClock(rr, 64 * 56);
+  assert.equal(defuse.phase, 'planted');
+  assert.equal(defuse.action.type, 'defusing');
+  assert.equal(defuse.action.secondsLeft, 4);
+  assert.equal(computeRoundClock(rr, 64 * 76).phase, 'round_over');
+  assert.equal(activeFlagStart(rr.frames, 64 * 69, 0, 32, 1), 64 * 69);
+  assert.equal(activeFlagStart(rr.frames, 64 * 69, 0, 32, 0), null);
 });
 
 test('worldToOverviewRadar maps de_nuke coordinates accurately', () => {

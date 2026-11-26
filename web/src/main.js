@@ -8,6 +8,10 @@ import {
   computeRoundClock,
   isSniperWeapon,
   unpackUtilityCounts,
+  cycleAliveSlot,
+  interpolateFrames,
+  matchFinalByCurrentSides,
+  roundAtTick,
 } from './viewer/math.js';
 import {
   weaponSvgIcon,
@@ -18,7 +22,7 @@ import {
   headshotIcon,
 } from './viewer/icons.js';
 
-const SPEEDS = [0.25, 0.5, 1, 2, 4];
+const SPEEDS = [0.1, 0.25, 0.5, 1, 2, 4, 6, 8];
 
 const state = {
   view: 'library', // 'library' | 'viewer'
@@ -34,6 +38,7 @@ const state = {
   activeRoundNum: 1,
   roundCache: new Map(),
   roundReplay: null,
+  roundRequest: 0,
   radarData: null,
   cameraMode: 'tactical',
   povSlot: 0,
@@ -106,6 +111,8 @@ async function openDemoInViewer(id) {
     state.health = health;
     state.activeDemo = detail;
     state.roundCache.clear();
+    state.roundRequest++;
+    state.roundReplay = null;
     const firstRound = detail.rounds?.[0]?.round_number || 1;
     state.activeRoundNum = firstRound;
     state.view = 'viewer';
@@ -177,8 +184,13 @@ async function loadViewerMatchAssetsAndRound(roundNum) {
   sceneInstance.setXray(state.xray);
   sceneInstance.setShowTracers(state.showTracers);
   sceneInstance.setRoundData(roundReplay, state.activeDemo.players);
+  sceneInstance.playbackSpeed = state.playbackSpeed;
   if (preserveTick !== null) {
     sceneInstance.currentTick = preserveTick;
+  }
+  if (roundReplay.is_pov && Number.isInteger(roundReplay.pov_slot)) {
+    state.cameraMode = 'pov';
+    state.povSlot = roundReplay.pov_slot;
   }
   sceneInstance.setCameraMode(state.cameraMode, state.povSlot);
   state.lastHudTick = -1;
@@ -188,33 +200,101 @@ async function loadViewerMatchAssetsAndRound(roundNum) {
 }
 
 async function fetchCachedRound(demoId, roundNum) {
-  if (state.roundCache.has(roundNum)) {
-    return state.roundCache.get(roundNum);
-  }
-  const rr = await api.getRound(demoId, roundNum);
-  state.roundCache.set(roundNum, rr);
-  return rr;
+  const key = `${demoId}:${roundNum}`;
+  const cached = state.roundCache.get(key);
+  state.roundCache.delete(key);
+  const request = cached || api.getRound(demoId, roundNum).catch((err) => {
+    if (state.roundCache.get(key) === request) state.roundCache.delete(key);
+    throw err;
+  });
+  state.roundCache.set(key, request);
+  if (state.roundCache.size > 5) state.roundCache.delete(state.roundCache.keys().next().value);
+  return request;
 }
 
-async function switchRound(roundNum) {
-  if (!state.activeDemo || !sceneInstance) return;
-  state.activeRoundNum = roundNum;
-  sceneInstance.playing = false;
-  audioInstance.resetRound();
-  const rr = await fetchCachedRound(state.activeDemo.metadata.id, roundNum);
-  state.roundReplay = rr;
-  sceneInstance.setRoundData(rr, state.activeDemo.players);
-  state.lastHudTick = -1;
-  state.lastHudCamKey = '';
-  renderTeamSideHudPanels();
-  updateViewerControlsDOM();
+async function switchRound(roundNum, { tick, playing = false } = {}) {
+  const match = state.activeDemo;
+  const view = sceneInstance;
+  if (!match || !view || !state.roundReplay) return;
+  const request = ++state.roundRequest;
+  view.playing = false;
+  try {
+    const rr = await fetchCachedRound(match.metadata.id, roundNum);
+    if (state.roundRequest !== request || sceneInstance !== view || state.activeDemo !== match) return;
+    state.activeRoundNum = roundNum;
+    state.roundReplay = rr;
+    audioInstance.resetRound();
+    view.setRoundData(rr, match.players);
+    if (Number.isFinite(tick)) {
+      view.currentTick = Math.max(rr.frames[0].t, Math.min(rr.frames.at(-1).t, tick));
+    }
+    view.playing = playing;
+    if (playing) preloadNextRound();
+    state.lastHudTick = -1;
+    state.lastHudCamKey = '';
+    renderTeamSideHudPanels();
+    updateViewerControlsDOM();
+    if (state.showScoreboardModal) renderModalsDOM();
+  } catch (err) {
+    if (state.roundRequest === request) setBanner('error', `Could not load round ${roundNum}: ${err.message}`);
+  }
+}
+
+function followingRound() {
+  const rounds = state.activeDemo?.rounds || [];
+  const index = rounds.findIndex((r) => r.round_number === state.activeRoundNum);
+  return index < 0 ? null : rounds[index + 1];
+}
+
+function preloadNextRound() {
+  const next = followingRound();
+  if (next) fetchCachedRound(state.activeDemo.metadata.id, next.round_number).catch(() => {});
+}
+
+function advanceRound() {
+  const next = followingRound();
+  if (next) switchRound(next.round_number, { playing: true });
+}
+
+function seekMatchTick(tick) {
+  if (!Number.isFinite(tick) || !sceneInstance || !state.roundReplay) return;
+  const target = roundAtTick(state.activeDemo.rounds, tick);
+  if (!target) return;
+  if (target.round_number !== state.activeRoundNum) {
+    switchRound(target.round_number, { tick });
+  } else {
+    state.roundRequest++;
+    sceneInstance.playing = false;
+    const frames = state.roundReplay.frames;
+    sceneInstance.currentTick = Math.max(frames[0].t, Math.min(tick, frames.at(-1).t));
+  }
+}
+
+function togglePlayback() {
+  const frames = state.roundReplay?.frames;
+  if (!sceneInstance || !frames?.length) return;
+  if (!sceneInstance.playing && sceneInstance.currentTick >= frames.at(-1).t) {
+    if (followingRound()) {
+      advanceRound();
+      return;
+    }
+    sceneInstance.currentTick = frames[0].t;
+  }
+  sceneInstance.playing = !sceneInstance.playing;
+  if (sceneInstance.playing) preloadNextRound();
+}
+
+function cycleSpectator(direction) {
+  if (!sceneInstance || !state.roundReplay) return;
+  const snapshot = interpolateFrames(state.roundReplay.frames, sceneInstance.currentTick);
+  if (!snapshot) return;
+  const next = cycleAliveSlot(snapshot.players, state.povSlot, direction);
+  if (next >= 0) sceneInstance.setCameraMode(state.cameraMode === 'chase' ? 'chase' : 'pov', next);
 }
 
 function getRoundTeamForPlayer(player, rr) {
-  const f0 = rr?.frames?.[0]?.p;
-  if (f0 && f0[player.slot] && (f0[player.slot][1] === 2 || f0[player.slot][1] === 3)) {
-    return f0[player.slot][1];
-  }
+  const liveSide = sceneInstance?.roundReplay === rr ? sceneInstance?.roundTeams.get(player.slot) : null;
+  if (liveSide) return liveSide;
   return player.start_team || player.team || 3;
 }
 
@@ -256,9 +336,9 @@ function renderTeamSideHudPanels() {
   document.querySelectorAll('[data-pov-slot]').forEach((el) => {
     el.addEventListener('click', () => {
       const slot = Number(el.dataset.povSlot);
-      state.cameraMode = 'pov';
+      state.cameraMode = state.cameraMode === 'chase' ? 'chase' : 'pov';
       state.povSlot = slot;
-      sceneInstance?.setCameraMode('pov', slot);
+      sceneInstance?.setCameraMode(state.cameraMode, slot);
       state.lastHudCamKey = '';
       updateViewerControlsDOM();
     });
@@ -267,25 +347,11 @@ function renderTeamSideHudPanels() {
 
 function updateMatchHeaderScoreboard() {
   const strip = document.getElementById('match-scoreboard-strip');
-  const ctScoreEl = document.getElementById('hud-score-ct');
-  const tScoreEl = document.getElementById('hud-score-t');
   if (!state.activeDemo) return;
   const d = state.activeDemo;
-  const meta = d.metadata;
-  const roundSummary =
-    d.rounds.find((r) => r.round_number === state.activeRoundNum) ||
-    state.roundReplay?.summary ||
-    d.rounds[0];
-
-  const ctScore = roundSummary ? roundSummary.score_ct : meta.score_ct;
-  const tScore = roundSummary ? roundSummary.score_t : meta.score_t;
-  if (ctScoreEl) ctScoreEl.textContent = String(ctScore);
-  if (tScoreEl) tScoreEl.textContent = String(tScore);
   if (strip) {
-    strip.innerHTML = `
-      <span>Round ${state.activeRoundNum}/${d.rounds.length}</span>
-      ${roundSummary?.win_reason ? `<span class="muted">· ${esc(roundSummary.win_reason)}</span>` : ''}
-    `;
+    const overtime = state.roundReplay?.overtime;
+    strip.textContent = `Round ${state.activeRoundNum}/${d.rounds.length}${overtime ? ` · OT ${overtime}` : ''}`;
   }
 }
 
@@ -320,6 +386,11 @@ function updateViewerControlsDOM() {
   const scrubber = document.getElementById('timeline-scrubber');
   const markersEl = document.getElementById('scrubber-markers');
   const rr = state.roundReplay;
+  document.getElementById('pov-recording-warning').hidden = !rr?.is_pov;
+  const matchScrubber = document.getElementById('match-timeline-scrubber');
+  if (matchScrubber && rr?.frames?.length && !followingRound()) {
+    matchScrubber.max = String(Math.max(Number(matchScrubber.max), rr.frames.at(-1).t));
+  }
   if (scrubber && rr?.frames?.length) {
     const minT = rr.frames[0].t;
     const maxT = rr.frames[rr.frames.length - 1].t;
@@ -428,6 +499,8 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
   if (scrubber && document.activeElement !== scrubber) {
     scrubber.value = String(Math.round(currentTick));
   }
+  const matchScrubber = document.getElementById('match-timeline-scrubber');
+  if (matchScrubber && document.activeElement !== matchScrubber) matchScrubber.value = String(Math.round(currentTick));
 
   const rr = state.roundReplay;
   const tickRate = rr?.tick_rate || 64;
@@ -484,6 +557,12 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
     } else if (clockInfo.phase === 'defused' || clockInfo.phase === 'exploded') {
       clockPhase.textContent = 'BOMB';
       clockText.textContent = clockInfo.clockText;
+    } else if (clockInfo.phase === 'pause' || clockInfo.phase === 'timeout') {
+      clockPhase.textContent = clockInfo.phase === 'pause' ? 'PAUSED' : `TIMEOUT · ${clockInfo.team === 3 ? 'CT' : 'T'}`;
+      clockText.textContent = clockInfo.clockText;
+    } else if (clockInfo.phase === 'round_over') {
+      clockPhase.textContent = 'ROUND OVER';
+      clockText.textContent = clockInfo.clockText;
     } else {
       clockPhase.textContent = 'LIVE';
       clockText.textContent = clockInfo.clockText;
@@ -513,9 +592,51 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
   state.lastHudTick = rounded;
   state.lastHudCamKey = camKey;
 
+  const outcome = document.getElementById('round-end-banner');
+  const round = rr?.summary;
+  const winner = round?.winner_team;
+  const roundOver = (winner > 0 || /^draw$/i.test(round?.win_reason || '')) && round.end_tick > 0 && currentTick >= round.end_tick;
+  if (round) {
+    for (const [side, score] of [[3, round.score_ct], [2, round.score_t]]) {
+      const node = document.getElementById(side === 3 ? 'hud-score-ct' : 'hud-score-t');
+      const value = String(Math.max(0, score - (!roundOver && winner === side ? 1 : 0)));
+      if (node && node.textContent !== value) node.textContent = value;
+    }
+  }
+  if (outcome) {
+    outcome.hidden = !roundOver;
+    if (roundOver) {
+      const mvp = state.activeDemo.players?.find((player) => player.slot === rr.mvp?.slot);
+      outcome.classList.toggle('team-ct', winner === 3);
+      outcome.querySelector('strong').textContent = winner === 3 ? 'Counter-Terrorists Win' : winner === 2 ? 'Terrorists Win' : 'Round Draw';
+      outcome.querySelector('span').textContent = [winner && round.win_reason, mvp && `MVP: ${mvp.name}`].filter(Boolean).join(' · ');
+    }
+  }
+
   const weapons = rr?.weapons || [];
   const obsSlot = snapshot?.observedSlot ?? state.povSlot;
   const obs = state.cameraMode === 'pov' ? snapshot?.players?.[obsSlot] : null;
+  const damage = document.getElementById('pov-damage');
+  if (damage) {
+    const hurts = rr?.hurts || [];
+    const windowStart = currentTick - tickRate * 0.75;
+    const latest = obs?.[0] === 1 && !snapshot?.deathCamActive && hurts.findLast((h) =>
+      h.tick <= currentTick && h.tick >= windowStart && h.dmg_hp > 0 && (h.attacker_slot === obsSlot || h.victim_slot === obsSlot));
+    damage.hidden = !latest;
+    if (latest) {
+      const taken = latest.victim_slot === obsSlot;
+      const attacker = taken ? snapshot?.players?.[latest.attacker_slot] : null;
+      let direction = '';
+      if (attacker?.[0] === 1 && latest.attacker_slot !== obsSlot) {
+        const bearing = Math.atan2(attacker[3] - obs[3], attacker[2] - obs[2]) * 180 / Math.PI - obs[5];
+        const relative = ((bearing + 180) % 360 + 360) % 360 - 180;
+        direction = Math.abs(relative) <= 45 ? ' · FRONT' : Math.abs(relative) >= 135 ? ' · REAR' : relative > 0 ? ' · LEFT' : ' · RIGHT';
+      }
+      damage.classList.toggle('taken', taken);
+      damage.textContent = `${taken ? '−' : '+'}${latest.dmg_hp} HP ${taken ? 'TAKEN' : 'DEALT'}${direction}`;
+      damage.style.opacity = String(Math.min(1, (latest.tick - windowStart) / (tickRate * 0.25)));
+    }
+  }
   const obsWeapon = obs && obs[13] >= 0 && weapons[obs[13]] ? weapons[obs[13]] : '';
   const obsZoom = obs ? obs[10] || 0 : 0;
   const sniperScoped = state.cameraMode === 'pov' && obs && obs[0] === 1 && isSniperWeapon(obsWeapon) && obsZoom > 0;
@@ -916,12 +1037,17 @@ function renderViewerView() {
       <div class="software-renderer-warning" id="software-renderer-warning" role="status" hidden>
         <strong>Software rendering detected.</strong> In your browser’s System settings, enable graphics acceleration when available, then relaunch the browser.
       </div>
+      <div class="software-renderer-warning" id="pov-recording-warning" role="status" hidden>
+        <strong>POV recording.</strong> Players outside the recorder’s potentially visible set may be missing or stale.
+      </div>
       <div class="stage-wrap">
         <div class="three-container" id="three-stage"></div>
         <pre class="render-diagnostics" id="render-diagnostics" aria-label="Renderer diagnostics" hidden></pre>
         <div class="tags-overlay" id="tags-overlay"></div>
         <div class="sniper-scope-overlay" id="sniper-scope-overlay"></div>
         <div class="pov-crosshair" id="pov-crosshair"></div>
+        <div class="pov-damage" id="pov-damage" hidden></div>
+        <div class="round-end-banner" id="round-end-banner" hidden><strong></strong><span></span></div>
         <div class="flash-vignette" id="flash-vignette"></div>
         <div class="flash-blind-full" id="flash-blind-full"></div>
         <div class="flash-meter" id="flash-meter">
@@ -978,10 +1104,15 @@ function renderViewerView() {
               <span class="muted" style="font-size:11px; font-weight:600;">CAMERA &amp; OVERLAYS</span>
               <span class="shortcuts-hint">WASD Free · 1-0 POV · X X-Ray</span>
             </div>
+            <div class="spectator-cameras">
+              <button class="btn btn-sm" data-cam-mode="tactical" id="btn-cam-tactical">Tactical [T]</button>
+              <button class="btn btn-sm" data-cam-mode="free" id="btn-cam-free">Free [F]</button>
+              <button class="btn btn-sm" data-cam-mode="pov" id="btn-cam-pov">1st POV</button>
+              <button class="btn btn-sm" data-cam-mode="chase" id="btn-cam-chase">Chase [V]</button>
+            </div>
             <div class="row">
-              <button class="btn btn-sm" data-cam-mode="tactical" id="btn-cam-tactical" style="flex:1;">Tactical [T]</button>
-              <button class="btn btn-sm" data-cam-mode="free" id="btn-cam-free" style="flex:1;">Free Cam [F]</button>
-              <button class="btn btn-sm" data-cam-mode="pov" id="btn-cam-pov" style="flex:1;">1st POV</button>
+              <button class="btn btn-sm" id="btn-spec-prev" style="flex:1;">Previous alive [</button>
+              <button class="btn btn-sm" id="btn-spec-next" style="flex:1;">Next alive ]</button>
             </div>
             <div class="row">
               <button class="btn btn-sm" id="btn-xray" style="flex:1;">X-Ray [X]</button>
@@ -1032,6 +1163,17 @@ function renderViewerView() {
             )
             .join('')}
         </div>
+        <div class="match-transport">
+          <label for="match-timeline-scrubber">Match timeline</label>
+          <input id="match-timeline-scrubber" type="range" min="${d.rounds[0]?.start_tick || 0}" max="${Math.max(d.rounds.at(-1)?.official_end_tick || 0, d.rounds.at(-1)?.end_tick || 0)}" />
+          <button class="btn btn-sm" id="btn-skip-back">−15 s</button>
+          <button class="btn btn-sm" id="btn-skip-fwd">+15 s</button>
+          <button class="btn btn-sm" id="btn-next-kill">Next kill</button>
+          <form class="match-go-to" id="form-go-to-tick">
+            <input class="input" id="input-go-to-tick" type="number" step="1" aria-label="Target tick" placeholder="Tick" required />
+            <button class="btn btn-sm" type="submit">Go to tick</button>
+          </form>
+        </div>
         <div class="transport-row">
           <button class="btn btn-primary btn-sm" id="btn-play" style="min-width:64px;">Play</button>
           <button class="btn btn-sm" id="btn-step-back">-16t</button>
@@ -1058,9 +1200,7 @@ function renderModals() {
     const players = state.activeDemo.players || [];
     const rr = state.roundReplay;
     const f0 = rr?.frames?.[0]?.p;
-    const snapPlayers = rr?.frames?.length
-      ? rr.frames[Math.min(rr.frames.length - 1, Math.max(0, Math.floor((sceneInstance?.currentTick || rr.frames[0].t) - rr.frames[0].t)))]?.p
-      : null;
+    const snapPlayers = rr?.frames?.length ? interpolateFrames(rr.frames, sceneInstance?.currentTick ?? rr.frames[0].t)?.players : null;
 
     const ctList = [];
     const tList = [];
@@ -1109,16 +1249,19 @@ function renderModals() {
       state.activeDemo.rounds.find((r) => r.round_number === state.activeRoundNum) || rr?.summary;
     const curCT = roundSum ? roundSum.score_ct : state.activeDemo.metadata.score_ct;
     const curT = roundSum ? roundSum.score_t : state.activeDemo.metadata.score_t;
+    const final = matchFinalByCurrentSides(
+      players, sceneInstance?.roundTeams || new Map(), state.activeDemo.metadata.score_ct, state.activeDemo.metadata.score_t,
+    );
 
     html += `
       <div class="modal-backdrop" id="modal-scoreboard">
         <div class="modal-card scoreboard-card">
           <div class="card-title">
-            <span>5v5 Scoreboard · ${esc(state.activeDemo.metadata.map_name)} · Round ${state.activeRoundNum} (${curCT}:${curT}) · Match Final (${state.activeDemo.metadata.score_ct}:${state.activeDemo.metadata.score_t})</span>
+            <span>5v5 Scoreboard · ${esc(state.activeDemo.metadata.map_name)} · Round ${state.activeRoundNum} (${curCT}:${curT}) · Match Final (${final.ct}:${final.t})</span>
             <button class="btn btn-sm" id="btn-close-scoreboard">Close [Tab]</button>
           </div>
-          ${renderTeamTable('COUNTER-TERRORISTS', 'ct', ctList, curCT, state.activeDemo.metadata.score_ct)}
-          ${renderTeamTable('TERRORISTS', 't', tList, curT, state.activeDemo.metadata.score_t)}
+          ${renderTeamTable('COUNTER-TERRORISTS', 'ct', ctList, curCT, final.ct)}
+          ${renderTeamTable('TERRORISTS', 't', tList, curT, final.t)}
         </div>
       </div>
     `;
@@ -1395,6 +1538,7 @@ function mountAndBindViewer() {
         updateLiveFrameHUD(snapshot, currentTick, playing);
         updateDiagnostics();
       },
+      onRoundEnd: advanceRound,
       onQualityChange: ({ setting, active }) => {
         state.qualitySetting = setting;
         state.activeQuality = active;
@@ -1411,8 +1555,7 @@ function mountAndBindViewer() {
   setDiagnosticsVisible(state.showRenderDiagnostics);
 
   renderTeamSideHudPanels();
-  updateMatchHeaderScoreboard();
-  applyCrosshairDOM();
+  updateViewerControlsDOM();
   renderCrosshairConfigSlot();
 
   document.getElementById('btn-back-library')?.addEventListener('click', async () => {
@@ -1444,6 +1587,8 @@ function mountAndBindViewer() {
       updateViewerControlsDOM();
     });
   });
+  document.getElementById('btn-spec-prev')?.addEventListener('click', () => cycleSpectator(-1));
+  document.getElementById('btn-spec-next')?.addEventListener('click', () => cycleSpectator(1));
 
   document.getElementById('btn-xray')?.addEventListener('click', () => {
     state.xray = !state.xray;
@@ -1489,13 +1634,21 @@ function mountAndBindViewer() {
     btn.addEventListener('click', () => switchRound(Number(btn.dataset.round)));
   });
 
-  document.getElementById('btn-play')?.addEventListener('click', () => {
-    if (!sceneInstance || !state.roundReplay?.frames?.length) return;
-    const maxT = state.roundReplay.frames[state.roundReplay.frames.length - 1].t;
-    if (!sceneInstance.playing && sceneInstance.currentTick >= maxT - 1) {
-      sceneInstance.currentTick = state.roundReplay.frames[0].t;
-    }
-    sceneInstance.playing = !sceneInstance.playing;
+  document.getElementById('btn-play')?.addEventListener('click', togglePlayback);
+  document.getElementById('match-timeline-scrubber')?.addEventListener('change', (e) => seekMatchTick(Number(e.target.value)));
+  for (const [id, seconds] of [['btn-skip-back', -15], ['btn-skip-fwd', 15]]) {
+    document.getElementById(id)?.addEventListener('click', () => {
+      if (sceneInstance && state.roundReplay) seekMatchTick(sceneInstance.currentTick + seconds * state.roundReplay.tick_rate);
+    });
+  }
+  document.getElementById('btn-next-kill')?.addEventListener('click', () => {
+    const current = sceneInstance?.currentTick;
+    const next = state.activeDemo?.kills?.find((kill) => kill.tick > current);
+    if (next) seekMatchTick(next.tick);
+  });
+  document.getElementById('form-go-to-tick')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    seekMatchTick(document.getElementById('input-go-to-tick').valueAsNumber);
   });
 
   const stepTicks = (delta) => {
@@ -1650,7 +1803,12 @@ window.addEventListener('keydown', (e) => {
     renderModalsDOM();
   } else if (e.code === 'Space' && state.cameraMode !== 'free') {
     e.preventDefault();
-    sceneInstance.playing = !sceneInstance.playing;
+    togglePlayback();
+  } else if (e.code === 'PageUp' || e.code === 'PageDown' || e.code === 'BracketLeft' || e.code === 'BracketRight') {
+    e.preventDefault();
+    cycleSpectator(e.code === 'PageUp' || e.code === 'BracketLeft' ? -1 : 1);
+  } else if (e.code === 'KeyV') {
+    sceneInstance.setCameraMode('chase', state.povSlot);
   } else if (e.code === 'ArrowLeft' && state.cameraMode !== 'free' && state.roundReplay?.frames?.length) {
     e.preventDefault();
     sceneInstance.playing = false;
@@ -1679,9 +1837,9 @@ window.addEventListener('keydown', (e) => {
     const num = Number(e.code.replace('Digit', ''));
     const slot = num === 0 ? 9 : num - 1;
     if (state.activeDemo?.players?.some((p) => p.slot === slot)) {
-      state.cameraMode = 'pov';
+      state.cameraMode = state.cameraMode === 'chase' ? 'chase' : 'pov';
       state.povSlot = slot;
-      sceneInstance.setCameraMode('pov', slot);
+      sceneInstance.setCameraMode(state.cameraMode, slot);
       state.lastHudCamKey = '';
       updateViewerControlsDOM();
     }

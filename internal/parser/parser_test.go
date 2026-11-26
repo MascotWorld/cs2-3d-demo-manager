@@ -17,6 +17,21 @@ func TestOpenDemoStreamRejectsInvalidFile(t *testing.T) {
 	}
 }
 
+func TestAppendPauseChange(t *testing.T) {
+	seconds := 30.0
+	counting := 29.0
+	frozen := 29.0
+	var states []RoundPause
+	states = appendPauseChange(states, RoundPause{Tick: 10}, 64)
+	states = appendPauseChange(states, RoundPause{Tick: 64, Kind: "timeout", Team: 3, SecondsLeft: &seconds}, 64)
+	states = appendPauseChange(states, RoundPause{Tick: 128, Kind: "timeout", Team: 3, SecondsLeft: &counting}, 64)
+	states = appendPauseChange(states, RoundPause{Tick: 192, Kind: "timeout", Team: 3, SecondsLeft: &frozen}, 64)
+	states = appendPauseChange(states, RoundPause{Tick: 256}, 64)
+	if len(states) != 3 || states[0].Tick != 64 || states[1].Tick != 192 || states[2].Kind != "" {
+		t.Fatalf("unexpected pause changes: %+v", states)
+	}
+}
+
 func TestParseRealDemosIfPresent(t *testing.T) {
 	cases := []struct {
 		name    string

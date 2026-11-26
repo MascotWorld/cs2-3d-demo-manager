@@ -184,6 +184,64 @@ func readGameRulesTimes(gs demoinfocs.GameState) (roundSec, freezeSec, bombSec i
 	return
 }
 
+func readRoundPause(gs demoinfocs.GameState, tick int, paused bool) RoundPause {
+	state := RoundPause{Tick: tick}
+	if rules := gs.Rules(); rules != nil && rules.Entity() != nil {
+		prop := func(name string) st.Property {
+			if p := rules.Entity().Property("m_pGameRules." + name); p != nil {
+				return p
+			}
+			return rules.Entity().Property(name)
+		}
+		for _, side := range []struct {
+			name string
+			team common.Team
+		}{{"CT", common.TeamCounterTerrorists}, {"Terrorist", common.TeamTerrorists}} {
+			if p := prop("m_b" + side.name + "TimeOutActive"); p != nil && p.Value().BoolVal() {
+				state.Kind = "timeout"
+				state.Team = int(side.team)
+				if remaining := prop("m_fl" + side.name + "TimeOutRemaining"); remaining != nil {
+					seconds := math.Max(0, float64(remaining.Value().Float()))
+					if !math.IsInf(seconds, 0) && !math.IsNaN(seconds) {
+						state.SecondsLeft = &seconds
+					}
+				}
+				return state
+			}
+		}
+		if p := prop("m_bTechnicalTimeOut"); p != nil && p.Value().BoolVal() {
+			state.Kind = "pause"
+			return state
+		}
+	}
+	if paused {
+		state.Kind = "pause"
+	}
+	return state
+}
+
+func appendPauseChange(states []RoundPause, state RoundPause, rate float64) []RoundPause {
+	if len(states) == 0 {
+		if state.Kind != "" {
+			return append(states, state)
+		}
+		return states
+	}
+	prev := states[len(states)-1]
+	if prev.Kind == state.Kind && prev.Team == state.Team {
+		if prev.SecondsLeft == nil && state.SecondsLeft == nil {
+			return states
+		}
+		if prev.SecondsLeft != nil && state.SecondsLeft != nil {
+			expected := math.Max(0, *prev.SecondsLeft-float64(state.Tick-prev.Tick)/rate)
+			if math.Abs(expected-*state.SecondsLeft) < 0.5 {
+				return states
+			}
+		}
+	}
+	return append(states, state)
+}
+
 func packUtilityCounts(pl *common.Player) int {
 	if pl == nil {
 		return 0
@@ -252,7 +310,9 @@ func ParseDemo(demoID string, demoPath string) (*ParsedMatch, error) {
 	}
 	defer rc.Close()
 
-	p := demoinfocs.NewParser(rc)
+	cfg := demoinfocs.DefaultParserConfig
+	cfg.IgnorePacketEntitiesPanic = true
+	p := demoinfocs.NewParserWithConfig(rc, cfg)
 	defer p.Close()
 
 	var mapName string
@@ -260,6 +320,16 @@ func ParseDemo(demoID string, demoPath string) (*ParsedMatch, error) {
 		if m.GetMapName() != "" {
 			mapName = normalizeMapName(m.GetMapName())
 		}
+	})
+	var recordingPlayer uint64
+	p.RegisterEventHandler(func(e events.POVRecordingPlayerDetected) {
+		if !e.PlayerInfo.IsHltv && !e.PlayerInfo.IsFakePlayer {
+			recordingPlayer = e.PlayerInfo.XUID
+		}
+	})
+	var paused bool
+	p.RegisterNetMessageHandler(func(m *msg.CSVCMsg_SetPause) {
+		paused = m.GetPaused()
 	})
 
 	type roundAcc struct {
@@ -277,6 +347,9 @@ func ParseDemo(demoID string, demoPath string) (*ParsedMatch, error) {
 		infernos      []InfernoZone
 		openInfernos  map[int64]int
 		bombEvents    []BombEvent
+		pauses        []RoundPause
+		mvp           *RoundMVP
+		overtime      int
 		frames        []Frame
 		firedThisTick map[int]bool
 		roundKills    map[int]int
@@ -511,6 +584,14 @@ func ParseDemo(demoID string, demoPath string) (*ParsedMatch, error) {
 			cur.summary.ScoreT = p.GameState().TeamTerrorists().Score()
 			scoreCT = cur.summary.ScoreCT
 			scoreT = cur.summary.ScoreT
+		}
+	})
+
+	p.RegisterEventHandler(func(e events.RoundMVPAnnouncement) {
+		if cur != nil {
+			if slot := slotOf(e.Player); slot >= 0 {
+				cur.mvp = &RoundMVP{Slot: slot, Reason: int(e.Reason)}
+			}
 		}
 	})
 
@@ -951,6 +1032,7 @@ func ParseDemo(demoID string, demoPath string) (*ParsedMatch, error) {
 			return
 		}
 		cur.lastTick = tick
+		cur.overtime = max(cur.overtime, gs.OvertimeCount())
 
 		// Collect live participants indexed by slot
 		bySlot := make([]*common.Player, len(rosterOrder))
@@ -975,6 +1057,7 @@ func ParseDemo(demoID string, demoPath string) (*ParsedMatch, error) {
 		}
 
 		playersTuple := make([][]float64, len(rosterOrder))
+		cur.pauses = appendPauseChange(cur.pauses, readRoundPause(gs, tick, paused), rate)
 		for slot, ps := range rosterOrder {
 			var pl *common.Player
 			if slot < len(bySlot) {
@@ -1198,6 +1281,12 @@ func ParseDemo(demoID string, demoPath string) (*ParsedMatch, error) {
 	// Finalize rounds (drop completely empty trailing/phantom rounds with 0 frames)
 	var validRounds []RoundSummary
 	roundData := make(map[int]*RoundReplay)
+	var recordedSlot *int
+	if recordingPlayer != 0 {
+		if ps := rosterBySteam[strconv.FormatUint(recordingPlayer, 10)]; ps != nil {
+			recordedSlot = &ps.Slot
+		}
+	}
 	for _, r := range rounds {
 		if len(r.frames) == 0 {
 			continue
@@ -1245,6 +1334,11 @@ func ParseDemo(demoID string, demoPath string) (*ParsedMatch, error) {
 			DemoID:        demoID,
 			RoundNumber:   rNum,
 			TickRate:      tickRate,
+			POV:           recordingPlayer != 0,
+			POVSlot:       recordedSlot,
+			Overtime:      r.overtime,
+			MVP:           r.mvp,
+			Pauses:        r.pauses,
 			Summary:       r.summary,
 			Weapons:       r.weapons,
 			Kills:         r.kills,

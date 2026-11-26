@@ -2,21 +2,21 @@ package parser
 
 // DemoMetadata holds high-level match info stored in SQLite.
 type DemoMetadata struct {
-	ID           string  `json:"id"`
-	Filename     string  `json:"filename"`
-	SourcePath   string  `json:"source_path"`
-	Format       string  `json:"format"` // "dem" or "dem.bz2"
-	FileSize     int64   `json:"file_size"`
-	MapName      string  `json:"map_name"`
-	TickRate     float64 `json:"tick_rate"`
-	TotalTicks   int     `json:"total_ticks"`
-	DurationSec  float64 `json:"duration_sec"`
-	ScoreCT      int     `json:"score_ct"`
-	ScoreT       int     `json:"score_t"`
-	RoundCount   int     `json:"round_count"`
-	KillCount    int     `json:"kill_count"`
-	ParsedAt     string  `json:"parsed_at"`
-	Status       string  `json:"status"`
+	ID          string  `json:"id"`
+	Filename    string  `json:"filename"`
+	SourcePath  string  `json:"source_path"`
+	Format      string  `json:"format"` // "dem" or "dem.bz2"
+	FileSize    int64   `json:"file_size"`
+	MapName     string  `json:"map_name"`
+	TickRate    float64 `json:"tick_rate"`
+	TotalTicks  int     `json:"total_ticks"`
+	DurationSec float64 `json:"duration_sec"`
+	ScoreCT     int     `json:"score_ct"`
+	ScoreT      int     `json:"score_t"`
+	RoundCount  int     `json:"round_count"`
+	KillCount   int     `json:"kill_count"`
+	ParsedAt    string  `json:"parsed_at"`
+	Status      string  `json:"status"`
 }
 
 // PlayerSummary represents one of the 10 match participants on the scoreboard.
@@ -37,7 +37,7 @@ type PlayerSummary struct {
 	RankNew   int     `json:"rank_new,omitempty"`
 }
 
-const CurrentReplaySchemaVersion = 2
+const CurrentReplaySchemaVersion = 3
 
 // RoundSummary holds round-level metadata and timeline markers.
 type RoundSummary struct {
@@ -149,33 +149,46 @@ type BombEvent struct {
 // Frame represents one simulation tick in a round.
 // Player tuples are ordered by Roster slot 0..N-1.
 // PlayerTuple fields:
-//   [0] alive (0|1)
-//   [1] team (0|2|3)
-//   [2] x
-//   [3] y
-//   [4] z
-//   [5] yaw (degrees)
-//   [6] pitch (degrees)
-//   [7] hp (0..100)
-//   [8] armor (0..100)
-//   [9] duck (0..1)
-//   [10] zoomLevel (0=none, 1=zoom1, 2=zoom2)
-//   [11] flashFrac (0..1 remaining blind intensity)
-//   [12] flashAlpha (0..1 max alpha)
-//   [13] weaponIdx (index into RoundReplay.Weapons, -1 if none)
-//   [14] flags (bit0: helmet, bit1: defuser, bit2: firing, bit3: defusing, bit4: planting, bit5: reloading)
-//   [15] money
-//   [16] ammoMag (-1 if N/A)
-//   [17] ammoRes (-1 if N/A)
-//   [18] equipVal
-//   [19] utilPacked (smoke + flash*10 + he*100 + molly*1000 + decoy*10000 + c4*100000)
-//   [20] aimPunchPitch
-//   [21] aimPunchYaw
-//   [22] roundKills
+//
+//	[0] alive (0|1)
+//	[1] team (0|2|3)
+//	[2] x
+//	[3] y
+//	[4] z
+//	[5] yaw (degrees)
+//	[6] pitch (degrees)
+//	[7] hp (0..100)
+//	[8] armor (0..100)
+//	[9] duck (0..1)
+//	[10] zoomLevel (0=none, 1=zoom1, 2=zoom2)
+//	[11] flashFrac (0..1 remaining blind intensity)
+//	[12] flashAlpha (0..1 max alpha)
+//	[13] weaponIdx (index into RoundReplay.Weapons, -1 if none)
+//	[14] flags (bit0: helmet, bit1: defuser, bit2: firing, bit3: defusing, bit4: planting, bit5: reloading)
+//	[15] money
+//	[16] ammoMag (-1 if N/A)
+//	[17] ammoRes (-1 if N/A)
+//	[18] equipVal
+//	[19] utilPacked (smoke + flash*10 + he*100 + molly*1000 + decoy*10000 + c4*100000)
+//	[20] aimPunchPitch
+//	[21] aimPunchYaw
+//	[22] roundKills
 type Frame struct {
 	Tick    int         `json:"t"`
 	Bomb    [5]float64  `json:"b"` // [x, y, z, carrierSlot(-1 if none), state(0=idle/dropped,1=carried,2=planting,3=planted,4=defused,5=exploded)]
 	Players [][]float64 `json:"p"`
+}
+
+type RoundPause struct {
+	Tick        int      `json:"tick"`
+	Kind        string   `json:"kind"`
+	Team        int      `json:"team,omitempty"`
+	SecondsLeft *float64 `json:"seconds_left,omitempty"`
+}
+
+type RoundMVP struct {
+	Slot   int `json:"slot"`
+	Reason int `json:"reason"`
 }
 
 // RoundReplay holds everything needed to play back one round in 3D.
@@ -184,6 +197,11 @@ type RoundReplay struct {
 	DemoID        string         `json:"demo_id"`
 	RoundNumber   int            `json:"round_number"`
 	TickRate      float64        `json:"tick_rate"`
+	POV           bool           `json:"is_pov,omitempty"`
+	POVSlot       *int           `json:"pov_slot,omitempty"`
+	Overtime      int            `json:"overtime,omitempty"`
+	MVP           *RoundMVP      `json:"mvp,omitempty"`
+	Pauses        []RoundPause   `json:"pauses,omitempty"`
 	Summary       RoundSummary   `json:"summary"`
 	Weapons       []string       `json:"weapons"`
 	Kills         []KillEvent    `json:"kills"`
@@ -198,9 +216,9 @@ type RoundReplay struct {
 
 // ParsedMatch is the complete result of parsing a CS2 demo file.
 type ParsedMatch struct {
-	Metadata DemoMetadata    `json:"metadata"`
-	Players  []PlayerSummary `json:"players"`
-	Rounds   []RoundSummary  `json:"rounds"`
-	Kills    []KillEvent     `json:"kills"`
+	Metadata  DemoMetadata         `json:"metadata"`
+	Players   []PlayerSummary      `json:"players"`
+	Rounds    []RoundSummary       `json:"rounds"`
+	Kills     []KillEvent          `json:"kills"`
 	RoundData map[int]*RoundReplay `json:"-"`
 }

@@ -6,7 +6,10 @@ import os from 'node:os';
 import net from 'node:net';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { cs2FovToVertical, povCameraFov, roundTeamsBySlot, VIEWMODEL_FOV } from '../../web/src/viewer/math.js';
+import {
+  cs2FovToVertical, matchFinalByCurrentSides, povCameraFov, resolveOperatorClipNames, roundTeamsBySlot,
+  VIEWMODEL_FOV, weaponCategory, weaponNameToModelKey,
+} from '../../web/src/viewer/math.js';
 
 const require = createRequire(new URL('../../web/package.json', import.meta.url));
 const { chromium } = require('playwright');
@@ -96,7 +99,7 @@ async function assertTagsAndHudClean(page, label) {
 }
 
 async function assertOperatorsAcrossHalftime(page, baseUrl, demoId) {
-  const { rounds } = await (await fetch(`${baseUrl}/api/demos/${demoId}`)).json();
+  const { rounds, players, metadata } = await (await fetch(`${baseUrl}/api/demos/${demoId}`)).json();
   const first = await (await fetch(`${baseUrl}/api/demos/${demoId}/rounds/${rounds[0].round_number}`)).json();
   const firstSides = roundTeamsBySlot(first.frames);
   let swapped;
@@ -123,9 +126,117 @@ async function assertOperatorsAcrossHalftime(page, baseUrl, demoId) {
     for (const [slot, model] of operators) {
       if (sides.has(slot)) assert.equal(model, sides.get(slot) === 3 ? 'ct' : 't', `Round ${number}, slot ${slot}`);
     }
+    const final = matchFinalByCurrentSides(players, sides, metadata.score_ct, metadata.score_t);
+    await page.click('#btn-scoreboard');
+    assert.match(await page.locator('.sb-team-hdr.ct').innerText(), new RegExp(`Match Final: ${final.ct}$`));
+    assert.match(await page.locator('.sb-team-hdr.t').innerText(), new RegExp(`Match Final: ${final.t}$`));
+    await page.click('#btn-close-scoreboard');
   }
   await page.click(`.round-pill[data-round="${rounds[0].round_number}"]`);
   await page.waitForFunction((n) => window.__CS2_SCENE__?.roundReplay?.summary?.round_number === n, rounds[0].round_number);
+}
+
+async function assertExtendedReplay(page, baseUrl, cacheDemoId) {
+  const detail = await (await fetch(`${baseUrl}/api/demos/${cacheDemoId}`)).json();
+  const [first, second] = detail.rounds;
+  const firstReplay = await (await fetch(`${baseUrl}/api/demos/${cacheDemoId}/rounds/${first.round_number}`)).json();
+  assert.equal(firstReplay.v, 3);
+  assert.ok(!firstReplay.is_pov, 'GOTV fixture must not be labeled a POV recording');
+  const firstPlayer = firstReplay.frames[0].p.findIndex((p) => p?.[0] === 1);
+
+  await page.selectOption('#select-speed', '8');
+  assert.equal(await page.evaluate(() => window.__CS2_SCENE__.playbackSpeed), 8);
+  await page.selectOption('#select-speed', '0.1');
+  assert.equal(await page.evaluate(() => window.__CS2_SCENE__.playbackSpeed), 0.1);
+  await page.selectOption('#select-speed', '1');
+  await page.locator('#input-go-to-tick').fill(String(second.start_tick + 10));
+  await page.locator('#form-go-to-tick button').click();
+  await page.waitForFunction((num) => window.__CS2_SCENE__?.roundReplay?.round_number === num, second.round_number);
+  assert.equal(await page.evaluate(() => window.__CS2_SCENE__.currentTick), second.start_tick + 10);
+  await page.evaluate((tick) => {
+    const input = document.getElementById('match-timeline-scrubber');
+    input.value = tick;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, first.start_tick + 100);
+  await page.waitForFunction((num) => window.__CS2_SCENE__?.roundReplay?.round_number === num, first.round_number);
+  await page.click('#btn-next-kill');
+  assert.equal(await page.evaluate(() => window.__CS2_SCENE__.currentTick), firstReplay.kills[0].tick);
+  await page.click('#btn-skip-back');
+  assert.equal(await page.evaluate(() => window.__CS2_SCENE__.currentTick),
+    Math.max(firstReplay.frames[0].t, firstReplay.kills[0].tick - 15 * firstReplay.tick_rate));
+
+  await page.evaluate((slot) => {
+    const s = window.__CS2_SCENE__;
+    s.currentTick = s.roundReplay.frames[0].t;
+    s.setCameraMode('chase', slot);
+  }, firstPlayer);
+  await page.click('#btn-spec-next');
+  const chase = await page.evaluate(() => {
+    const s = window.__CS2_SCENE__;
+    const p = s.roundReplay.frames[0].p[s.povSlot];
+    return { mode: s.cameraMode, slot: s.povSlot, alive: p?.[0] === 1, bodyVisible: s.rigBySlot.get(s.povSlot).root.visible };
+  });
+  assert.deepEqual(chase, { mode: 'chase', slot: (firstPlayer + 1) % firstReplay.frames[0].p.length, alive: true, bodyVisible: true });
+  const chaseButtonFits = await page.locator('#btn-cam-chase').evaluate((button) =>
+    button.getBoundingClientRect().right <= button.closest('.cam-toolbar').getBoundingClientRect().right);
+  assert.ok(chaseButtonFits, 'Chase must fit inside the camera toolbar');
+  await page.screenshot({ path: path.join(RENDERS_DIR, '22-match-transport-chase.png') });
+  await page.click('#btn-cam-tactical');
+
+  const hurt = firstReplay.hurts.find((event) => event.attacker_slot >= 0 && event.dmg_hp > 0 &&
+    firstReplay.frames.findLast((frame) => frame.t <= event.tick)?.p[event.attacker_slot]?.[0] === 1);
+  assert.ok(hurt, 'Cache fixture must have a visible non-world damage event');
+  await page.evaluate(({ tick, slot }) => {
+    const s = window.__CS2_SCENE__;
+    s.currentTick = tick;
+    s.setCameraMode('pov', slot);
+  }, { tick: hurt.tick, slot: hurt.attacker_slot });
+  await page.locator('#pov-damage').waitFor();
+  assert.match(await page.locator('#pov-damage').innerText(), /HP DEALT/);
+  await page.screenshot({ path: path.join(RENDERS_DIR, '24-pov-damage.png') });
+
+  const clipNames = new Set(await page.evaluate(() => [...window.__CS2_SCENE__.operatorClips.keys()]));
+  let reload;
+  for (const frame of firstReplay.frames) {
+    for (const [slot, p] of frame.p.entries()) {
+      if (p?.[0] !== 1 || p[10] || (p[14] & 32) === 0) continue;
+      const name = firstReplay.weapons[p[13]];
+      const { vmReload } = resolveOperatorClipNames({
+        weaponKey: weaponNameToModelKey(name, p[1]), weaponCat: weaponCategory(name), team: p[1],
+      });
+      if (clipNames.has(vmReload)) {
+        reload = {tick: frame.t, slot, clip: vmReload};
+        break;
+      }
+    }
+    if (reload) break;
+  }
+  assert.ok(reload, 'Cache fixture must include a reload with an available clip');
+  await page.evaluate(({ tick, slot }) => {
+    const s = window.__CS2_SCENE__;
+    s.currentTick = tick;
+    s.setCameraMode('pov', slot);
+  }, reload);
+  await page.waitForFunction((clip) => window.__CS2_VIEWER__?.viewModelClip === clip, reload.clip);
+
+  await page.click('#btn-cam-tactical');
+  await page.evaluate(() => {
+    const s = window.__CS2_SCENE__;
+    s.currentTick = s.roundReplay.summary.end_tick;
+  });
+  await page.locator('#round-end-banner').waitFor();
+  assert.match(await page.locator('#round-end-banner').innerText(), /Win/);
+  if (firstReplay.mvp) assert.match(await page.locator('#round-end-banner').innerText(), /MVP:/);
+  await page.screenshot({ path: path.join(RENDERS_DIR, '23-round-end.png') });
+
+  await page.evaluate(() => {
+    const s = window.__CS2_SCENE__;
+    s.currentTick = s.roundReplay.frames.at(-1).t - 0.01;
+    s.playing = true;
+  });
+  await page.waitForFunction((num) => window.__CS2_SCENE__?.roundReplay?.round_number === num && window.__CS2_SCENE__.playing, second.round_number);
+  await page.click(`.round-pill[data-round="${first.round_number}"]`);
+  await page.waitForFunction((num) => window.__CS2_SCENE__?.roundReplay?.round_number === num, first.round_number);
 }
 
 async function assertOccludedOutlinePixels(page) {
@@ -328,6 +439,7 @@ async function run() {
     assert.ok(await page.locator('#render-diagnostics').isHidden());
     await assertOccludedOutlinePixels(page);
     await assertOperatorsAcrossHalftime(page, BASE_URL, cacheDemoId);
+    await assertExtendedReplay(page, BASE_URL, cacheDemoId);
 
     // Sweep 25 combat ticks across de_cache active round and verify zero nameplate overlaps + weapon-hand attachment
     const combatSweep = await page.evaluate(() => {
@@ -915,6 +1027,36 @@ async function run() {
     await page.waitForFunction(() => document.querySelectorAll('[data-demo-row]').length === 1);
     await page.reload({ waitUntil: 'networkidle' });
     await page.waitForFunction(() => document.querySelectorAll('[data-demo-row]').length === 1);
+
+    const povFixture = `**/api/demos/${cacheDemoId}/rounds/1`;
+    await page.route(povFixture, async (route) => {
+      const response = await route.fetch();
+      const replay = await response.json();
+      replay.is_pov = true;
+      replay.pov_slot = replay.frames[0].p.findIndex((p) => p?.[0] === 1);
+      replay.overtime = 1;
+      replay.mvp = { slot: replay.pov_slot, reason: 1 };
+      const firstTick = replay.frames[0].t;
+      replay.pauses = [
+        { tick: firstTick, kind: 'timeout', team: 3, seconds_left: 30 },
+        { tick: firstTick + 640, kind: '' },
+      ];
+      await route.fulfill({ response, json: replay });
+    });
+    await page.locator('[data-demo-row]', { hasText: 'de_cache' }).locator('[data-open-demo]').click();
+    await page.locator('#pov-recording-warning').waitFor({ timeout: 45000 });
+    await page.waitForFunction(() => window.__CS2_VIEWER__?.cameraMode === 'pov');
+    await page.waitForFunction(() => document.getElementById('round-clock-phase').textContent === 'TIMEOUT · CT');
+    assert.match(await page.locator('#match-scoreboard-strip').innerText(), /OT 1/);
+    await page.screenshot({ path: path.join(RENDERS_DIR, '25-pov-recording-warning.png') });
+    await page.evaluate(() => {
+      const s = window.__CS2_SCENE__;
+      s.currentTick = s.roundReplay.summary.end_tick;
+    });
+    await page.locator('#round-end-banner').waitFor();
+    assert.match(await page.locator('#round-end-banner').innerText(), /MVP:/);
+    await page.screenshot({ path: path.join(RENDERS_DIR, '26-round-end-mvp-fixture.png') });
+    await page.unroute(povFixture);
 
     assert.deepEqual(pageErrors, [], `Unexpected page errors: ${pageErrors.join('; ')}`);
     assert.deepEqual(failedApiResponses, [], `Unexpected 5xx API responses: ${failedApiResponses.join('; ')}`);

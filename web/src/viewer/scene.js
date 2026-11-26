@@ -17,6 +17,8 @@ import {
   parseCsmsh1,
   povCameraFov,
   cs2FovToVertical,
+  activeFlagStart,
+  cycleAliveSlot,
   roundTeamsBySlot,
   WORLD_FOV,
   VIEWMODEL_FOV,
@@ -620,6 +622,7 @@ export class DemoScene {
     this.overlayEl = overlayEl;
     this.onCameraStateChange = options.onCameraStateChange || (() => {});
     this.onFrameRender = options.onFrameRender || (() => {});
+    this.onRoundEnd = options.onRoundEnd || (() => {});
     this.onQualityChange = options.onQualityChange || (() => {});
 
     this.scene = new THREE.Scene();
@@ -1127,6 +1130,8 @@ export class DemoScene {
     if (this.envRenderTarget) this.envRenderTarget.dispose();
     this._smokeNoiseTexture?.dispose();
     this.playerOutline.dispose();
+    this.mapCollision?.geometry.dispose();
+    this.mapCollision?.material.dispose();
     this.renderer.dispose();
     if (dom.parentNode) dom.parentNode.removeChild(dom);
     if (typeof window !== 'undefined') {
@@ -1483,6 +1488,15 @@ export class DemoScene {
 
     const skyboxPromise = this.setMapSkybox(skyboxUrl);
     const parsedRef = meshBuffer ? parseCsmsh1(meshBuffer) : null;
+    this.mapCollision?.geometry.dispose();
+    this.mapCollision?.material.dispose();
+    this.mapCollision = null;
+    if (parsedRef) {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(parsedRef.positions, 3));
+      geometry.computeBoundingBox();
+      this.mapCollision = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+    }
 
     if (customGlbUrl) {
       try {
@@ -2342,6 +2356,18 @@ export class DemoScene {
     this.onCameraStateChange({ cameraMode: this.cameraMode, povSlot: this.povSlot });
   }
 
+  _clipSpectatorCamera(origin, target) {
+    const direction = (this._cameraRayDirection ??= new THREE.Vector3()).subVectors(target, origin);
+    const distance = direction.length();
+    if (distance <= 8) return;
+    const ray = (this._cameraRay ??= new THREE.Raycaster());
+    ray.set(origin, direction.divideScalar(distance));
+    ray.near = 4;
+    ray.far = distance;
+    const hits = this.mapCollision ? ray.intersectObject(this.mapCollision, false) : ray.intersectObjects(this.mapGroup.children, true);
+    if (hits.length) target.copy(origin).addScaledVector(direction, Math.max(2, hits[0].distance - 6));
+  }
+
   focusWorldPoint(cs2x, cs2y, cs2z, distance = 900) {
     const [tx, ty, tz] = cs2ToThree(cs2x, cs2y, cs2z);
     if (this.cameraMode === 'tactical') {
@@ -2964,7 +2990,7 @@ export class DemoScene {
   }
 
   _startLoop() {
-    const tickLoop = (now) => {
+      const tickLoop = (now) => {
       this._rafId = requestAnimationFrame(tickLoop);
       const rawDtMs = this.lastRafTs ? now - this.lastRafTs : 0;
       const dt = rawDtMs ? Math.min(0.08, rawDtMs / 1000) : 0.016;
@@ -2990,6 +3016,7 @@ export class DemoScene {
         }
       }
 
+      let reachedRoundEnd = false;
       if (this.playing && this.roundReplay && this.roundReplay.frames?.length > 1) {
         const tickRate = this.roundReplay.tick_rate || 64;
         const frames = this.roundReplay.frames;
@@ -2998,6 +3025,7 @@ export class DemoScene {
         if (this.currentTick >= maxTick) {
           this.currentTick = maxTick;
           this.playing = false;
+          reachedRoundEnd = true;
         }
       }
 
@@ -3058,6 +3086,7 @@ export class DemoScene {
         hasRealOperators: !!(this.ctPlayerTemplate && this.tPlayerTemplate),
         loadedWeaponModels: this.weaponTemplates.size,
         activeViewModelKey: this.currentRealVmKey || this.currentViewCategory || null,
+        viewModelClip: this.currentViewModelClip,
         cameraPos: [
           Math.round(this.camera.position.x),
           Math.round(this.camera.position.y),
@@ -3073,6 +3102,7 @@ export class DemoScene {
       };
 
       this.onFrameRender(snapshot, this.currentTick, this.playing);
+      if (reachedRoundEnd) this.onRoundEnd();
     };
     this._rafId = requestAnimationFrame(tickLoop);
   }
@@ -3152,6 +3182,7 @@ export class DemoScene {
 
     const snap = interpolateFrames(this.roundReplay.frames, tick);
     if (!snap) return null;
+    this.currentViewModelClip = null;
 
     const carrierSlot = snap.bomb && snap.bomb[4] === 1 ? Math.round(snap.bomb[3]) : -1;
     const weapons = this.roundReplay.weapons || [];
@@ -3185,6 +3216,14 @@ export class DemoScene {
     let deathCamPos = null;
     let povSlotChanged = false;
 
+    if (this.cameraMode === 'chase' && observedPlayer?.[0] !== 1) {
+      const next = cycleAliveSlot(snap.players, observedSlot, 1);
+      if (next >= 0) {
+        this.povSlot = observedSlot = next;
+        observedPlayer = snap.players[next];
+        povSlotChanged = true;
+      }
+    }
     if (this.cameraMode === 'pov') {
       if (observedPlayer && observedPlayer[0] === 1) {
         this._deathCam = null;
@@ -3461,7 +3500,17 @@ export class DemoScene {
     }
 
     // Apply 1st-person POV camera (or >=3s Deathcam showing fallen body) + real CS2 viewmodel animations
-    if (this.cameraMode === 'pov') {
+    if (this.cameraMode === 'chase' && observedPlayer?.[0] === 1) {
+      const p = observedPlayer;
+      const [x, y, z] = cs2ToThree(p[2], p[3], p[4]);
+      const [dx, , dz] = cs2LookDirThree(p[5], 0);
+      const look = (this._chaseLook ??= new THREE.Vector3()).set(x, y + 54 - 16 * (p[9] || 0), z);
+      const target = (this._chaseTarget ??= new THREE.Vector3()).set(x - 110 * dx + 24 * dz, look.y + 27, z - 110 * dz - 24 * dx);
+      this._clipSpectatorCamera(look, target);
+      this.camera.position.copy(target);
+      this.camera.lookAt(look.x + dx * 36, look.y, look.z + dz * 36);
+      this.viewModelGroup.visible = false;
+    } else if (this.cameraMode === 'pov') {
       if (deathCamActive && deathCamPos) {
         this.viewModelGroup.visible = false;
         if (this.camera.fov !== WORLD_FOV_VERTICAL) {
@@ -3479,20 +3528,7 @@ export class DemoScene {
           vy + 32 + ease * 26,
           vz - lz * dist
         );
-        if (this.mapGroup.children.length > 0) {
-          const rc = (this._tmpDeathRc || (this._tmpDeathRc = new THREE.Raycaster()));
-          const dir = (this._tmpDeathDir || (this._tmpDeathDir = new THREE.Vector3())).subVectors(desiredCam, lookAt);
-          const len = dir.length();
-          if (len > 2) {
-            dir.divideScalar(len);
-            rc.set(lookAt, dir);
-            rc.far = len;
-            const hits = rc.intersectObjects(this.mapGroup.children, true);
-            if (hits.length > 0 && hits[0].distance > 12) {
-              desiredCam.copy(lookAt).addScaledVector(dir, hits[0].distance - 8);
-            }
-          }
-        }
+        this._clipSpectatorCamera(lookAt, desiredCam);
         this.camera.position.copy(desiredCam);
         this.camera.lookAt(lookAt);
       } else if (observedPlayer && observedPlayer[0] === 1) {
@@ -3561,7 +3597,14 @@ export class DemoScene {
             let vmClipName = vmClips.vmIdle;
             let vmTime = nowSec;
             let vmLoop = true;
-            if (latestPovShot >= 0 && this.operatorClips.has(vmClips.vmShoot)) {
+            const reloadStart = (p[14] & 32) !== 0 ? activeFlagStart(this.roundReplay.frames, tick, observedSlot, 32, wIdx) : null;
+            if (reloadStart !== null && this.operatorClips.has(vmClips.vmReload)) {
+              vmClipName = vmClips.vmReload;
+              vmTime = (tick - reloadStart) / tickRate;
+              vmLoop = false;
+              this.vmDrawTimer = 0;
+              this.viewInspectPhase = 0;
+            } else if (latestPovShot >= 0 && this.operatorClips.has(vmClips.vmShoot)) {
               vmClipName = vmClips.vmShoot;
               vmTime = (tick - latestPovShot) / tickRate;
               vmLoop = false;
@@ -3581,6 +3624,7 @@ export class DemoScene {
               crossFadeSec: 0.08,
               dt,
             });
+            if (usedRealVmAnim) this.currentViewModelClip = vmClipName;
           }
 
           let showingRealVm = false;

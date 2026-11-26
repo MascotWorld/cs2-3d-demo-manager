@@ -39,12 +39,16 @@ The directory flags accept comma-separated paths. Pass `-geo-dirs /path/to/geome
 | --- | --- |
 | `T` | Tactical orbit camera |
 | `F` | Free camera. Use WASD, Space/E, C/Q, and Shift to move; drag to look. |
+| `V` | Third-person chase camera |
 | `1`–`9`, `0` | Switch to player slots 1–10 |
+| `[` / `]` | Switch to the previous or next alive player |
 | `X` | Toggle X-ray and player nameplates |
 | `F3` | Toggle renderer diagnostics: GPU, FPS, frame time, draw calls, and triangles |
 | `Tab` | Toggle the scoreboard |
 | `Space` | Play or pause outside free camera |
 | `←` / `→` | Step one tick outside free camera |
+
+Playback continues into the next round. Use the match timeline or **Go to tick** to seek across rounds, or jump by 15 seconds or to the next kill. The round timeline still lets you step through individual ticks. POV demos may omit updates for players outside the recorder's potentially visible set; the viewer displays a warning when it detects a POV recording.
 
 ## Optional local game assets
 

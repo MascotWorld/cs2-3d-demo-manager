@@ -55,6 +55,40 @@ export function findFrameIndex(frames, tick) {
   return lo;
 }
 
+export function activeFlagStart(frames, tick, slot, mask, weaponIndex = null) {
+  let index = findFrameIndex(frames, tick);
+  const hasFlag = (frame) => {
+    const p = frame?.p?.[slot];
+    return p?.[0] === 1 && (p[14] & mask) !== 0 && (weaponIndex === null || p[13] === weaponIndex);
+  };
+  if (!hasFlag(frames[index])) return null;
+  while (index > 0 && hasFlag(frames[index - 1])) index--;
+  return frames[index].t;
+}
+
+export function roundAtTick(rounds, tick) {
+  const index = rounds.findLastIndex((round) => round.start_tick <= tick);
+  return rounds[Math.max(0, index)] ?? null;
+}
+
+export function cycleAliveSlot(players, slot, direction) {
+  if (slot < 0 || slot >= players.length) slot = direction > 0 ? -1 : 0;
+  for (let i = 1; i <= players.length; i++) {
+    const next = ((slot + direction * i) % players.length + players.length) % players.length;
+    if (players[next]?.[0] === 1) return next;
+  }
+  return -1;
+}
+
+export function matchFinalByCurrentSides(players, currentSides, finalCT, finalT) {
+  let votes = 0;
+  for (const player of players) {
+    const current = currentSides.get(player.slot);
+    if (current && (player.team === 2 || player.team === 3)) votes += current === player.team ? 1 : -1;
+  }
+  return votes < 0 ? { ct: finalT, t: finalCT } : { ct: finalCT, t: finalT };
+}
+
 // PlayerTuple indices from internal/parser/types.go:
 // [0] alive, [1] team, [2] x, [3] y, [4] z, [5] yaw, [6] pitch,
 // [7] hp, [8] armor, [9] duck, [10] scoped, [11] flashFrac, [12] flashAlpha,
@@ -384,8 +418,28 @@ export function computeRoundClock(roundReplay, tick, tickRate = 64) {
   const startTick = sum.start_tick ?? roundReplay?.frames?.[0]?.t ?? 0;
   const freezeEnd = sum.freeze_end_tick || startTick;
   const roundTimeSec = sum.round_time_sec > 0 ? sum.round_time_sec : 115;
-  const freezeTimeSec = sum.freeze_time_sec > 0 ? sum.freeze_time_sec : Math.max(0, Math.round((freezeEnd - startTick) / rate));
+  const freezeTimeSec = sum.freeze_time_sec > 0 ? sum.freeze_time_sec : Infinity;
   const bombTimeSec = sum.bomb_time_sec > 0 ? sum.bomb_time_sec : 40;
+  const pauses = roundReplay?.pauses || [];
+  const pause = pauses.findLast((event) => event.tick <= tick);
+  if (pause?.kind) {
+    const secondsLeft = pause.seconds_left == null ? null : Math.max(0, pause.seconds_left - (tick - pause.tick) / rate);
+    return {
+      phase: pause.kind,
+      clockText: secondsLeft == null ? '—' : formatClock(Math.ceil(secondsLeft)),
+      secondsLeft, team: pause.team, bombPct: 0, action: null,
+    };
+  }
+  const runningTicks = (start, end) => {
+    if (end <= start) return 0;
+    let elapsed = end - start;
+    for (let i = 0; i < pauses.length && pauses[i].tick < end; i++) {
+      if (pauses[i].kind) {
+        elapsed -= Math.max(0, Math.min(end, pauses[i + 1]?.tick ?? end) - Math.max(start, pauses[i].tick));
+      }
+    }
+    return elapsed;
+  };
 
   const bombEvents = roundReplay?.bomb_events || [];
   let plantedEv = null;
@@ -418,8 +472,30 @@ export function computeRoundClock(roundReplay, tick, tickRate = 64) {
       if (activeAction?.type === 'defusing') activeAction = null;
     }
   }
-  if (plantedEv && activeAction?.type === 'planting') activeAction = null;
   if (endEv) activeAction = null;
+
+  const frames = roundReplay?.frames || [];
+  const frameIndex = findFrameIndex(frames, tick);
+  const frame = frames[frameIndex];
+  if (!plantedEv && frame?.b?.[4] === 3) {
+    let index = frameIndex;
+    while (index > 0 && frames[index - 1]?.b?.[4] === 3) index--;
+    plantedEv = { tick: frames[index].t };
+  }
+  if (plantedEv && activeAction?.type === 'planting') activeAction = null;
+  if (!activeAction && !endEv && frame?.p) {
+    const flag = plantedEv ? 8 : 16;
+    const slot = frame.p.findIndex((p) => p?.[0] === 1 && (p[14] & flag) !== 0);
+    if (slot >= 0) {
+      const hasKit = flag === 8 && (frame.p[slot][14] & 2) !== 0;
+      activeAction = {
+        type: flag === 8 ? 'defusing' : 'planting',
+        startTick: activeFlagStart(frames, tick, slot, flag),
+        totalSec: flag === 8 ? (hasKit ? 5 : 10) : 3.2,
+        hasKit, slot,
+      };
+    }
+  }
 
   let action = null;
   if (activeAction) {
@@ -440,7 +516,7 @@ export function computeRoundClock(roundReplay, tick, tickRate = 64) {
   }
   if (plantedEv) {
     const total = plantedEv.duration_sec || bombTimeSec;
-    const elapsed = Math.max(0, (tick - plantedEv.tick) / rate);
+    const elapsed = runningTicks(plantedEv.tick, tick) / rate;
     const left = Math.max(0, total - elapsed);
     return {
       phase: 'planted',
@@ -452,16 +528,19 @@ export function computeRoundClock(roundReplay, tick, tickRate = 64) {
     };
   }
   if (tick < freezeEnd && freezeEnd > startTick) {
-    const left = Math.max(0, (freezeEnd - tick) / rate);
+    const left = Math.min(freezeTimeSec, runningTicks(tick, freezeEnd) / rate);
     return {
       phase: 'freeze',
-      clockText: formatClock(Math.ceil(Math.min(freezeTimeSec || 15, left))),
+      clockText: formatClock(Math.ceil(left)),
       secondsLeft: left,
       bombPct: 0,
       action,
     };
   }
-  const elapsedLive = Math.max(0, (tick - freezeEnd) / rate);
+  if ((sum.winner_team > 0 || /^draw$/i.test(sum.win_reason || '')) && sum.end_tick > 0 && tick >= sum.end_tick) {
+    return { phase: 'round_over', clockText: '—', secondsLeft: 0, bombPct: 0, action: null };
+  }
+  const elapsedLive = runningTicks(freezeEnd, tick) / rate;
   const left = Math.max(0, roundTimeSec - elapsedLive);
   return {
     phase: 'live',

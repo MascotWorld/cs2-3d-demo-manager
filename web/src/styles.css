@@ -362,6 +362,55 @@ table.demo-table tr:hover td {
   font-size: 12px;
 }
 
+.round-end-banner,
+.pov-damage {
+  position: absolute;
+  left: 50%;
+  z-index: 15;
+  transform: translateX(-50%);
+  text-align: center;
+  pointer-events: none;
+}
+
+.round-end-banner {
+  top: 23%;
+  min-width: min(300px, 65%);
+  padding: 10px 18px;
+  border: 1px solid var(--t);
+  border-radius: 6px;
+  background: rgba(9, 12, 18, 0.94);
+  color: var(--t);
+}
+
+.round-end-banner.team-ct {
+  border-color: var(--ct);
+  color: var(--ct);
+}
+
+.round-end-banner strong,
+.round-end-banner span {
+  display: block;
+}
+
+.round-end-banner span {
+  margin-top: 3px;
+  color: var(--text-1);
+  font-size: 12px;
+}
+
+.pov-damage {
+  top: calc(50% + 27px);
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: rgba(9, 12, 18, 0.83);
+  color: #e0f2fe;
+  font: 700 11px var(--mono);
+}
+
+.pov-damage.taken {
+  color: #ffadab;
+}
+
 .render-diagnostics {
   position: absolute;
   z-index: 17;
@@ -1335,6 +1384,44 @@ table.demo-table tr:hover td {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.match-transport,
+.match-go-to {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.spectator-cameras {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.spectator-cameras .btn {
+  padding-inline: 3px;
+}
+
+.match-transport {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.match-transport label {
+  flex-shrink: 0;
+}
+
+.match-transport input[type='range'] {
+  flex: 1;
+  min-width: 44px;
+  accent-color: var(--accent);
+}
+
+.match-go-to input {
+  width: 76px;
+  min-width: 0;
+  padding: 4px 6px;
 }
 
 .scrubber-wrap {
