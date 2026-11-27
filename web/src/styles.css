@@ -510,7 +510,7 @@ table.demo-table tr:hover td {
 
 .flash-meter {
   position: absolute;
-  top: 248px;
+  top: max(270px, 30vh);
   left: 8px;
   max-width: 216px;
   overflow: hidden;
