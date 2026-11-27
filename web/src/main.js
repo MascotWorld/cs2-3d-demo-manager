@@ -403,7 +403,7 @@ function updateViewerControlsDOM() {
   const markersEl = document.getElementById('scrubber-markers');
   const rr = state.roundReplay;
   document.getElementById('pov-recording-warning').hidden = !rr?.is_pov;
-  document.querySelector('.radar-box')?.classList.toggle('player-radar', !!rr?.is_pov);
+  document.querySelector('.radar-box')?.classList.toggle('player-radar', !!rr?.is_pov || state.cameraMode === 'pov');
   const matchScrubber = document.getElementById('match-timeline-scrubber');
   if (matchScrubber && rr?.frames?.length && !followingRound()) {
     matchScrubber.max = String(Math.max(Number(matchScrubber.max), rr.frames.at(-1).t));

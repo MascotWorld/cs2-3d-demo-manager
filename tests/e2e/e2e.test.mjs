@@ -203,8 +203,7 @@ async function assertNativeHudLayout(page, mode) {
   assert.ok(layout.nativeIcons > 0, 'HUD must serve the local Valve equipment icons when the assets are installed');
   assert.ok(layout.nativeFonts.length >= 2, `Local CS2 fonts must load in the browser, got ${layout.nativeFonts.join(', ')}`);
   if (mode === 'pov') {
-    assert.equal(layout.radarRadius, layout.povRecording ? '50%' : '0px',
-      `Radar shape follows the recording: round for POV recordings, square for GOTV (got ${layout.radarRadius} for pov=${layout.povRecording})`);
+    assert.equal(layout.radarRadius, '50%', 'First-person observation uses the round player radar');
     assert.ok(layout.leftWing && layout.leftWing.left < layout.stage.width * 0.45, 'Health cluster stays left of center');
     assert.ok(layout.rightWing && layout.rightWing.right > layout.stage.width * 0.6, 'Ammo cluster stays right of center');
     assert.ok(layout.leftWing.right < layout.rightWing.left || layout.leftWing.right < layout.stage.width * 0.55,
