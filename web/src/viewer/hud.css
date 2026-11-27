@@ -190,11 +190,16 @@
 }
 
 .hud-money {
+  display: none;
   margin-top: 1px;
   background: rgba(0, 0, 0, 0.5);
   text-align: center;
   font: 600 10px/14px var(--hud-digits);
   color: #dfe3e7;
+}
+
+.native-top-hud.money-visible .hud-money {
+  display: block;
 }
 
 .hud-player-row.observed .hud-player-frame {
@@ -428,8 +433,8 @@
 .pov-hp-big {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font: 700 34px/1 var(--hud-digits);
+  gap: 7px;
+  font: 700 40px/1 var(--hud-digits);
   color: #ffffff;
 }
 
@@ -456,18 +461,16 @@
 }
 
 .pov-armor-tag {
+  order: -1;
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font: 700 21px/1 var(--hud-digits);
+  font: 700 22px/1 var(--hud-digits);
   color: rgba(233, 238, 243, 0.82);
 }
 
 .pov-player-tag {
-  font: 600 11px/14px var(--hud-font);
-  letter-spacing: 0.05em;
-  color: rgba(233, 238, 243, 0.72);
-  white-space: nowrap;
+  display: none;
 }
 
 .pov-hp-bar {
@@ -554,8 +557,8 @@
 .pov-ammo-text {
   display: inline-flex;
   align-items: baseline;
-  gap: 4px;
-  font: 700 26px/1 var(--hud-digits);
+  gap: 5px;
+  font: 700 30px/1 var(--hud-digits);
   color: #ffffff;
 }
 
@@ -640,7 +643,7 @@
 .kf-weapon-cell {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 0;
   color: #f0f3f6;
 }
 
@@ -658,6 +661,7 @@
 .kf-mod-icon {
   width: 13px;
   height: 13px;
+  margin-left: -1px;
   object-fit: contain;
   fill: currentColor;
   opacity: 0.92;

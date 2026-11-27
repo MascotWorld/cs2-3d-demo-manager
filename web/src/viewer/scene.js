@@ -857,6 +857,7 @@ export class DemoScene {
     this.cameraMode = 'tactical'; // 'pov' | 'free' | 'tactical'
     this.povSlot = 0;
     this.xray = true;
+    this.playerLabels = false;
     this.showTracers = true;
 
     this.mapBounds = {
@@ -2438,6 +2439,13 @@ export class DemoScene {
     this.orbit.update();
   }
 
+  setPlayerLabels(enabled) {
+    this.playerLabels = !!enabled;
+    if (!this.playerLabels) {
+      for (const rig of this.playerRigs) if (rig.labelEl) rig.labelEl.style.display = 'none';
+    }
+  }
+
   setXray(enabled) {
     this.xray = !!enabled;
   }
@@ -3990,6 +3998,10 @@ export class DemoScene {
 
   _update2DOverlays(snap) {
     if (!this.overlayEl || !snap) return;
+    if (!this.playerLabels) {
+      for (const rig of this.playerRigs) if (rig.labelEl) rig.labelEl.style.display = 'none';
+      return;
+    }
     const w = this.container.clientWidth || 1;
     const h = this.container.clientHeight || 1;
     const v = new THREE.Vector3();

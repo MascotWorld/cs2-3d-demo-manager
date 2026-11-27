@@ -635,7 +635,13 @@ async function run() {
     const hintHeight = await page.evaluate(() => document.querySelector('.cam-toolbar-hdr .shortcuts-hint')?.getBoundingClientRect().height || 0);
     assert.ok(hintHeight > 0 && hintHeight < 22, `Expected single-line hint, got ${hintHeight}px`);
     await page.waitForTimeout(200);
-    await assertTagsAndHudClean(page, '02-viewer-tactical');
+    const visibleTags = () => page.evaluate(() => [...document.querySelectorAll('.player-3d-tag')].filter((el) => el.style.display !== 'none').length);
+    assert.equal(await visibleTags(), 0, 'World nameplates stay hidden by default, like native CS2 spectator');
+    await page.keyboard.press('KeyN');
+    await page.waitForFunction(() => [...document.querySelectorAll('.player-3d-tag')].some((el) => el.style.display !== 'none'));
+    await assertTagsAndHudClean(page, '02-viewer-tactical-tags');
+    await page.keyboard.press('KeyN');
+    await page.waitForFunction(() => [...document.querySelectorAll('.player-3d-tag')].every((el) => el.style.display === 'none'));
     await assertNativeHudLayout(page, 'tactical');
     await shot(page, '02-viewer-tactical.png');
     await page.keyboard.press('F3');
@@ -772,6 +778,14 @@ async function run() {
     await assertTagsAndHudClean(page, '03-viewer-smoke-action');
     await shot(page, '03-viewer-smoke-action.png');
     await clickTool(page, '[data-cam-mode="tactical"]');
+
+    // 4a. Buy-phase only money under the top cards
+    const liveMoney = await page.evaluate(() => getComputedStyle(document.querySelector('.hud-money')).display);
+    assert.equal(liveMoney, 'none', 'Money under the top cards must stay hidden outside freeze/buy time');
+    await page.evaluate(() => { window.__CS2_SCENE__.currentTick = window.__CS2_SCENE__.roundReplay.summary.freeze_end_tick - 32; });
+    await page.waitForFunction(() => document.querySelector('.native-top-hud')?.classList.contains('money-visible'));
+    const buyMoney = await page.evaluate(() => getComputedStyle(document.querySelector('.hud-money')).display);
+    assert.equal(buyMoney, 'block', 'Money must show during freeze/buy time');
 
     // 5. Test -1t / +1t stepping and Play/Pause
     const t0 = await page.evaluate(() => window.__CS2_VIEWER__.currentTick);

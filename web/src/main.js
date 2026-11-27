@@ -45,6 +45,7 @@ const state = {
   cameraMode: 'tactical',
   povSlot: 0,
   xray: true,
+  showPlayerLabels: false,
   showTracers: true,
   blindMode: 'observer', // 'observer' | 'cs2'
   audioEnabled: false,
@@ -187,6 +188,7 @@ async function loadViewerMatchAssetsAndRound(roundNum) {
   state.roundReplay = roundReplay;
   audioInstance.resetRound();
   sceneInstance.setXray(state.xray);
+  sceneInstance.setPlayerLabels(state.showPlayerLabels);
   sceneInstance.setShowTracers(state.showTracers);
   sceneInstance.setRoundData(roundReplay, state.activeDemo.players);
   sceneInstance.playbackSpeed = state.playbackSpeed;
@@ -462,6 +464,8 @@ function updateViewerControlsDOM() {
   });
   const xrayBtn = document.getElementById('btn-xray');
   if (xrayBtn) xrayBtn.classList.toggle('btn-active', state.xray);
+  const labelsBtn = document.getElementById('btn-labels');
+  if (labelsBtn) labelsBtn.classList.toggle('btn-active', state.showPlayerLabels);
   const tracersBtn = document.getElementById('btn-tracers');
   if (tracersBtn) tracersBtn.classList.toggle('btn-active', state.showTracers);
   const blindBtn = document.getElementById('btn-blind-mode');
@@ -784,6 +788,8 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
 
   // Top CS2 Player Squares indexed strictly by `player.slot`
   if (snapshot && state.activeDemo) {
+    const buyPhase = document.getElementById('round-clock-box')?.dataset.phase === 'freeze';
+    document.querySelector('.native-top-hud')?.classList.toggle('money-visible', buyPhase);
     for (const player of state.activeDemo.players) {
       const slot = player.slot;
       const row = document.getElementById(`hud-player-${slot}`);
@@ -1129,6 +1135,7 @@ function renderViewerView() {
               </div>
               <div class="row">
                 <button class="btn btn-sm" id="btn-xray" style="flex:1;">X-Ray [X]</button>
+                <button class="btn btn-sm ${state.showPlayerLabels ? 'btn-active' : ''}" id="btn-labels" style="flex:1;">Names [N]</button>
                 <button class="btn btn-sm" id="btn-tracers" style="flex:1;">Tracers</button>
                 <button class="btn btn-sm" id="btn-reset-cam">Reset</button>
               </div>
@@ -1613,6 +1620,11 @@ function mountAndBindViewer() {
     sceneInstance?.setXray(state.xray);
     updateViewerControlsDOM();
   });
+  document.getElementById('btn-labels')?.addEventListener('click', () => {
+    state.showPlayerLabels = !state.showPlayerLabels;
+    sceneInstance?.setPlayerLabels(state.showPlayerLabels);
+    updateViewerControlsDOM();
+  });
 
   document.getElementById('btn-tracers')?.addEventListener('click', () => {
     state.showTracers = !state.showTracers;
@@ -1851,6 +1863,10 @@ window.addEventListener('keydown', (e) => {
   } else if (e.code === 'KeyX') {
     state.xray = !state.xray;
     sceneInstance.setXray(state.xray);
+    updateViewerControlsDOM();
+  } else if (e.code === 'KeyN') {
+    state.showPlayerLabels = !state.showPlayerLabels;
+    sceneInstance.setPlayerLabels(state.showPlayerLabels);
     updateViewerControlsDOM();
   } else if (e.code === 'KeyF') {
     state.cameraMode = 'free';

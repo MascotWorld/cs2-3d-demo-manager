@@ -256,39 +256,33 @@ export class RadarRenderer {
       const dirX = Math.cos(yawRad);
       const dirY = -Math.sin(yawRad);
       const isObs = cameraMode === 'pov' && povSlot === slot;
-      const color = p[1] === 3 ? '#4ba3ff' : '#f5a623';
+      const color = isObs ? '#ffffff' : p[1] === 3 ? '#8fa7d6' : '#e9b160';
       const sameFloor = lowerZ === null || (p[4] < lowerZ) === isLowerLevel;
-      ctx.globalAlpha = sameFloor ? 1.0 : 0.45;
+      ctx.globalAlpha = sameFloor ? 1.0 : 0.4;
+      const heading = Math.atan2(dirY, dirX);
 
-      // View cone
-      ctx.fillStyle = isObs
-        ? 'rgba(255, 255, 255, 0.32)'
-        : p[1] === 3
-        ? 'rgba(75, 163, 255, 0.25)'
-        : 'rgba(245, 166, 35, 0.25)';
+      // Only the spectated player shows a facing wedge, like the native radar
+      if (isObs) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.28)';
+        ctx.beginPath();
+        ctx.moveTo(rx, ry);
+        ctx.arc(rx, ry, 20, heading - 0.4, heading + 0.4);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Player marker: heading triangle, team colored
+      const size = isObs ? 6.6 : 5.2;
+      ctx.fillStyle = color;
+      ctx.strokeStyle = 'rgba(6, 8, 11, 0.9)';
+      ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(rx, ry);
-      const a0 = Math.atan2(dirY, dirX) - 0.42;
-      const a1 = Math.atan2(dirY, dirX) + 0.42;
-      ctx.arc(rx, ry, 18, a0, a1);
+      ctx.moveTo(rx + Math.cos(heading) * size, ry + Math.sin(heading) * size);
+      ctx.lineTo(rx + Math.cos(heading + 2.5) * size * 0.82, ry + Math.sin(heading + 2.5) * size * 0.82);
+      ctx.lineTo(rx + Math.cos(heading - 2.5) * size * 0.82, ry + Math.sin(heading - 2.5) * size * 0.82);
       ctx.closePath();
       ctx.fill();
-
-      // Player dot
-      ctx.fillStyle = color;
-      ctx.strokeStyle = isObs ? '#ffffff' : '#090c12';
-      ctx.lineWidth = isObs ? 2 : 1.3;
-      ctx.beginPath();
-      ctx.arc(rx, ry, isObs ? 5.6 : 4.8, 0, Math.PI * 2);
-      ctx.fill();
       ctx.stroke();
-
-      // Slot number
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 8px ui-monospace, monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(String((slot + 1) % 10), rx, ry + 0.5);
       ctx.globalAlpha = 1.0;
     }
   }
