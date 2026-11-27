@@ -328,11 +328,11 @@ function renderTeamSideHudPanels() {
       <span class="hud-player-frame${portrait ? ' has-portrait' : ''}" data-slot="${(p.slot + 1) % 10}">
         ${portrait ? `<img class="hud-operator-portrait" src="${portrait}" alt="">` : ''}
         <span class="hud-hp-num">100</span>
+        <span class="hp-track"><span class="hud-hp-fill" style="width:100%;"></span></span>
+        <span class="hud-money">$0</span>
         <span class="hud-player-weapon"></span>
         <span class="hud-sq-gear"></span>
-        <span class="hp-track"><span class="hud-hp-fill" style="width:100%;"></span></span>
       </span>
-      <span class="hud-money">$0</span>
     </button>
   `;
 
@@ -1088,12 +1088,12 @@ function renderViewerView() {
           <aside class="team-hud ct" id="team-hud-ct" aria-label="Counter-Terrorists"></aside>
           <div class="round-clock-banner">
             <div class="round-clock-box" id="round-clock-box">
-              <span class="cs2-team-score ct" id="hud-score-ct">0</span>
+              <span class="cs2-team-score ct"><b id="hud-score-ct">0</b><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 1 8 3v5c0 5-4 8-8 10-4-2-8-5-8-10V4zm0 3L5 6v3c0 3 2 5 5 7 3-2 5-4 5-7V6z"/><path d="m10 5 1 3 3 1-3 1-1 3-1-3-3-1 3-1z"/></svg></span>
               <div class="cs2-clock-center">
                 <span id="round-clock-text">1:55</span>
                 <span class="cs2-clock-phase" id="round-clock-phase">LIVE</span>
               </div>
-              <span class="cs2-team-score t" id="hud-score-t">0</span>
+              <span class="cs2-team-score t"><b id="hud-score-t">0</b><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 1 2 5 6 .5-4.5 4 1.4 5.5-4.9-3-4.9 3 1.4-5.5L2 6.5 6 6l2 2-2 1 2 2 2-4z"/><path d="M4 15l2 2 10-8 1 1-9 9H6zm12 0-2 2-8-6-1 1 7 7h2z"/></svg></span>
               <span class="cs2-alive ct" id="hud-alive-ct" aria-label="Counter-Terrorists alive"></span>
               <span class="cs2-alive t" id="hud-alive-t" aria-label="Terrorists alive"></span>
             </div>

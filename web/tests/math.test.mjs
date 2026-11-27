@@ -125,6 +125,8 @@ test('smokeEnvelope grows, holds, and fades within active tick range', () => {
   assert.ok(early.scale < mid.scale);
   assert.ok(mid.opacity > early.opacity);
   assert.ok(mid.opacity > late.opacity);
+  assert.equal(smokeEnvelope({ ...smoke, end_tick: 0 }, 1253, 64).active, false);
+  assert.equal(smokeEnvelope({ ...smoke, end_tick: 1512 }, 1400, 64).opacity, mid.opacity);
 });
 
 test('parseCsmsh1 parses header, transforms vertices, and validates bounds', () => {

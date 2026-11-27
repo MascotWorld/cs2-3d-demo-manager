@@ -1,5 +1,5 @@
 // Pure 2D Tactical Radar renderer (uses CS2 radar PNG with Valve overview calibration, else CSGEO1 contour).
-import { worldToOverviewRadar } from './math.js';
+import { smokeEnvelope, worldToOverviewRadar } from './math.js';
 
 export class RadarRenderer {
   constructor(canvas) {
@@ -166,7 +166,7 @@ export class RadarRenderer {
 
     // Active Smokes
     for (const sm of roundReplay.smokes || []) {
-      if (currentTick < sm.start_tick || currentTick > sm.end_tick) continue;
+      if (!smokeEnvelope(sm, currentTick, tickRate).opacity) continue;
       const [rx, ry] = this._worldToRadar(sm.position[0], sm.position[1], w, h, bounds, useOverview);
       ctx.fillStyle = 'rgba(226, 232, 240, 0.72)';
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.92)';

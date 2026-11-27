@@ -42,7 +42,7 @@
   flex-direction: column;
   align-items: stretch;
   position: relative;
-  width: clamp(28px, 5.0vh, 64px);
+  width: clamp(22px, min(5.1vh, 7.5vw), 64px);
   padding: 0;
   background: none;
   border: 0;
@@ -73,9 +73,12 @@
 
 .hud-player-frame {
   position: relative;
-  display: block;
-  aspect-ratio: 1;
-  background: linear-gradient(rgba(12, 13, 15, .55), rgba(12, 13, 15, .24));
+  display: grid;
+  grid-template-rows: 13px 26px 13px 12px;
+  align-items: center;
+  justify-items: center;
+  isolation: isolate;
+  background: linear-gradient(rgba(16, 14, 12, .77), rgba(16, 14, 12, .31));
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-top: 2px solid rgba(255, 255, 255, 0.22);
 }
@@ -91,32 +94,28 @@
 .hud-player-frame::after {
   content: attr(data-slot);
   position: absolute;
-  inset: 0;
+  inset: 13px 0 0;
   display: grid;
-  place-items: center;
-  padding-bottom: 0;
+  place-items: start center;
   color: rgba(255, 255, 255, .28);
   font: 700 clamp(12px, 2.4vh, 26px)/1 var(--hud-font);
   pointer-events: none;
 }
 
 .hud-sq-gear {
-  position: absolute;
-  top: calc(100% + 31px);
-  left: 0;
-  right: 0;
-  justify-content: center;
+  grid-row: 4;
   display: flex;
-  gap: 2px;
+  justify-content: center;
+  gap: 1px;
   align-items: center;
   z-index: 1;
 }
 
 .hud-hp-num {
-  position: absolute;
-  left: 3px;
-  bottom: -14px;
-  inset-inline: 0;
+  grid-row: 1;
+  align-self: stretch;
+  justify-self: stretch;
+  margin-inline: 1px;
   padding-left: 3px;
   font: 700 11px/13px var(--hud-digits);
   text-align: left;
@@ -126,10 +125,8 @@
 }
 
 .hud-player-weapon {
-  position: absolute;
-  left: 50%;
-  top: calc(100% + 17px);
-  transform: translateX(-50%);
+  grid-row: 3;
+  max-width: 100%;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -190,8 +187,8 @@
 
 .hud-money {
   display: none;
-  margin-top: 15px;
-  background: rgba(0, 0, 0, 0.5);
+  grid-row: 5;
+  z-index: 1;
   text-align: center;
   font: 600 10px/14px var(--hud-digits);
   color: #dfe3e7;
@@ -199,11 +196,7 @@
 
 .native-top-hud.money-visible .hud-money {
   display: block;
-  margin-bottom: 28px;
 }
-
-.money-visible .hud-player-weapon { top: calc(100% + 32px); }
-.money-visible .hud-sq-gear { top: calc(100% + 47px); }
 
 .hud-player-row.observed .hud-player-frame {
   background: rgba(28, 34, 42, 0.74);
@@ -246,23 +239,36 @@
   row-gap: 3px;
   min-width: clamp(56px, 8vh, 96px);
   padding: 0 0 3px;
-  background: linear-gradient(rgba(6, 8, 11, .78), rgba(6, 8, 11, .3));
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  column-gap: 3px;
+  position: relative;
 }
 
 .cs2-team-score {
   min-width: 18px;
-  text-align: center;
-  font: 700 clamp(15px, 2.2vh, 24px)/1 var(--hud-digits);
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding-block: 1px;
+  font: 700 clamp(15px, 2.0vh, 24px)/1 var(--hud-digits);
   letter-spacing: -0.01em;
   color: #f2f4f6;
 }
 
+.cs2-team-score svg {
+  width: 11px;
+  height: 11px;
+  fill: currentColor;
+}
+
 .cs2-team-score.ct {
+  --panel-ink: rgba(41, 61, 98, .72);
   color: var(--hud-ct-bright);
 }
 
 .cs2-team-score.t {
+  --panel-ink: rgba(104, 67, 22, .72);
   color: var(--hud-t-bright);
 }
 
@@ -275,6 +281,7 @@
 .cs2-alive.t { color: var(--hud-t-bright); }
 
 .cs2-clock-center {
+  position: relative;
   grid-column: 1 / -1;
   grid-row: 1;
   border-bottom: 1px solid var(--hud-stroke);
@@ -466,9 +473,31 @@
 }
 
 .pov-stat-row {
+  position: relative;
+  padding-inline: 6px;
   display: flex;
   align-items: baseline;
   gap: 14px;
+}
+
+.cs2-clock-center,
+.cs2-team-score,
+.pov-stat-row,
+.pov-weapon-ammo-row {
+  isolation: isolate;
+}
+
+.cs2-clock-center::before,
+.cs2-team-score::before,
+.pov-stat-row::before,
+.pov-weapon-ammo-row::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--panel-ink, rgba(14, 12, 10, .59));
+  clip-path: polygon(6px 0, 100% 0, calc(100% - 6px) 100%, 0 100%);
+  pointer-events: none;
 }
 
 .pov-hp-big {
@@ -590,8 +619,14 @@
   color: rgba(240, 244, 248, 0.9);
 }
 
-.pov-util-icon .inventory-svg,
 .sq-util-icon .inventory-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.pov-util-icon .inventory-svg {
   width: 17px;
   height: 17px;
   object-fit: contain;
@@ -605,6 +640,8 @@
 }
 
 .pov-weapon-ammo-row {
+  position: relative;
+  padding-inline: 6px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1253,9 +1290,15 @@
 
 .hud-operator-portrait {
   display: block;
+  position: absolute;
+  z-index: -1;
+  inset: 13px 0 auto;
   width: 100%;
-  height: 100%;
+  height: 41px;
   object-fit: cover;
+  object-position: center 32%;
+  opacity: .68;
+  mask-image: linear-gradient(#000 46%, transparent);
   background: radial-gradient(ellipse at bottom, #64728b, #20262f);
 }
 

@@ -19,6 +19,7 @@ const CACHE_DEMO_BZ2 = process.env.CS2_TEST_CACHE_DEMO;
 const NUKE_DEMO_PATH = process.env.CS2_TEST_NUKE_DEMO;
 const GEO_DIR = process.env.CS2_GEO_DIRS || path.join(REPO_ROOT, 'data', 'assets', 'geo');
 const ASSETS_DIR = process.env.CS2_ASSET_DIRS || path.join(REPO_ROOT, 'data', 'assets');
+const FIXTURE_TIMEOUT_MS = Number(process.env.E2E_FIXTURE_TIMEOUT_MS) || 45000;
 const RENDERS_DIR = process.env.E2E_RENDERS_DIR || path.join(REPO_ROOT, 'data', 'test-renders');
 
 function getFreePort() {
@@ -175,6 +176,15 @@ async function assertNativeHudLayout(page, mode) {
       card: card ? card.getBoundingClientRect().width : 0,
       cardBg: style('#team-hud-ct .hud-player-frame', 'backgroundColor'),
       cardRadius: style('#team-hud-ct .hud-player-frame', 'borderRadius'),
+      tileContents: [...document.querySelectorAll('.hud-player-frame')].every((tile) => {
+        const box = tile.getBoundingClientRect();
+        return ['.hud-hp-num', '.hud-player-weapon', '.hud-sq-gear'].every((selector) => {
+          const r = tile.querySelector(selector).getBoundingClientRect();
+          return r.top >= box.top && r.bottom <= box.bottom;
+        });
+      }),
+      teamEmblems: document.querySelectorAll('.cs2-team-score svg').length,
+      clockPlate: getComputedStyle(document.querySelector('.cs2-clock-center'), '::before').clipPath,
       radarRadius: style('.radar-box', 'borderRadius'),
       hudFont: style('.hud-player-name', 'fontFamily'),
       digitsFont: style('#round-clock-text', 'fontFamily'),
@@ -188,8 +198,8 @@ async function assertNativeHudLayout(page, mode) {
     };
   });
   assert.equal(layout.cards, 10, 'Both team card rows must render five players each');
-  assert.ok(Math.abs(layout.card - 45) < 1,
-    `Expected a 45px player tile at the 900px test viewport, got ${layout.card}`);
+  assert.ok(Math.abs(layout.card - 45.9) < 1,
+    `Expected a 46px player tile at the 900px test viewport, got ${layout.card}`);
   assert.ok(layout.top && Math.abs((layout.top.left + layout.top.right) / 2 - layout.stage.width / 2) < 12,
     'Top cards and clock must stay centered');
   assert.ok(layout.ct.right <= layout.clock.left && layout.tteam.left >= layout.clock.right,
@@ -197,6 +207,9 @@ async function assertNativeHudLayout(page, mode) {
   assert.ok(layout.radar && layout.radar.width >= 150 && layout.radar.left <= 20 && layout.radar.top <= 20,
     `Spectator radar must sit square in the top-left, got ${JSON.stringify(layout.radar)}`);
   assert.equal(layout.cardRadius, '0px', 'Native teammate tiles are square');
+  assert.ok(layout.tileContents, 'Every tile contains its own HP, weapon and utility rows');
+  assert.equal(layout.teamEmblems, 2);
+  assert.match(layout.clockPlate, /^polygon\(/);
   assert.ok(layout.killfeed && layout.killfeed.right >= layout.stage.width - 20 && layout.killfeed.width < layout.stage.width * 0.5,
     `Killfeed must hug the top-right corner, got ${JSON.stringify(layout.killfeed)}`);
   assert.match(layout.hudFont, /CS2 HUD|Stratum2/, `HUD font stack must prefer the local CS2 face, got ${layout.hudFont}`);
@@ -575,13 +588,13 @@ async function run() {
     console.log('Uploading de_cache .dem.bz2...');
     await page.setInputFiles('#input-demo-file', path.resolve(CACHE_DEMO_BZ2));
     await page.click('#btn-upload-demo');
-    await page.waitForSelector('.status-banner.ok', { timeout: 30000 });
+    await page.waitForSelector('.status-banner.ok', { timeout: FIXTURE_TIMEOUT_MS });
     await page.waitForSelector('[data-demo-row]');
 
     console.log('Indexing de_nuke .dem...');
     await page.fill('#input-demo-path', path.resolve(NUKE_DEMO_PATH));
     await page.click('#btn-register-demo');
-    await page.waitForFunction(() => document.querySelectorAll('[data-demo-row]').length === 2, null, { timeout: 45000 });
+    await page.waitForFunction(() => document.querySelectorAll('[data-demo-row]').length === 2, null, { timeout: FIXTURE_TIMEOUT_MS });
 
     await page.selectOption('#select-map-filter', 'de_nuke');
     await page.waitForFunction(() => document.querySelectorAll('[data-demo-row]').length === 1);
@@ -607,7 +620,7 @@ async function run() {
         window.__CS2_VIEWER__.loadedWeaponModels >= 10 &&
         window.__CS2_VIEWER__.alivePlayers === 10,
       null,
-      { timeout: 45000 }
+      { timeout: FIXTURE_TIMEOUT_MS }
     );
 
     // 2a. Game frame fills the stage while demo tooling stays collapsed in a tray
@@ -782,6 +795,11 @@ async function run() {
     await page.waitForTimeout(200);
     await assertTagsAndHudClean(page, '03-viewer-smoke-action');
     await shot(page, '03-viewer-smoke-action.png');
+    await page.evaluate(([x, y, z]) => {
+      window.__CS2_SCENE__.freePos.set(x, z + 54, -y);
+    }, smokeFocus.pos);
+    await page.waitForFunction(() => window.__CS2_VIEWER__.insideSmoke);
+    await shot(page, '28-inside-real-smoke.png');
     await clickTool(page, '[data-cam-mode="tactical"]');
 
     // 4a. Buy-phase only money under the top cards
@@ -955,7 +973,7 @@ async function run() {
         window.__CS2_VIEWER__.alivePlayers >= 8 &&
         window.__CS2_SCENE__?.roundReplay?.frames?.length > 0,
       null,
-      { timeout: 45000 }
+      { timeout: FIXTURE_TIMEOUT_MS }
     );
     await page.waitForTimeout(350);
     await assertTagsAndHudClean(page, '07-nuke-glb-tactical');
@@ -1301,7 +1319,7 @@ async function run() {
       await route.fulfill({ response, json: replay });
     });
     await page.locator('[data-demo-row]', { hasText: 'de_cache' }).locator('[data-open-demo]').click();
-    await page.locator('#pov-recording-warning').waitFor({ timeout: 45000 });
+    await page.locator('#pov-recording-warning').waitFor({ timeout: FIXTURE_TIMEOUT_MS });
     await page.waitForFunction(() => window.__CS2_VIEWER__?.cameraMode === 'pov');
     await page.waitForFunction(() => document.getElementById('round-clock-phase').textContent === 'TIMEOUT · CT');
     assert.match(await page.locator('#match-scoreboard-strip').innerText(), /OT 1/);

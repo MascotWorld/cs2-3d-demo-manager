@@ -474,11 +474,12 @@ function makeVolumetricSmokeMaterial(noiseTexture) {
           if (density > 0.005) {
             float sunSample = clamp(dot(normalize(p + vec3(0.0, 0.01, 0.0)), uSunLocal) * 0.5 + 0.5, 0.0, 1.0);
             float heightGrad = clamp(p.y * 0.5 + 0.55, 0.0, 1.0);
-            vec3 shadowGrey = vec3(0.47, 0.50, 0.55);
-            vec3 litGrey = vec3(0.84, 0.87, 0.90);
+            vec3 shadowGrey = vec3(0.48, 0.49, 0.50);
+            vec3 litGrey = vec3(0.82, 0.83, 0.84);
             vec3 sampleCol = mix(shadowGrey, litGrey, clamp(sunSample * 0.62 + heightGrad * 0.38 + n * 0.14, 0.0, 1.0));
 
-            float stepA = (1.0 - exp(-density * dt * 2.95)) * uOpacity;
+            float extinction = uInside > 0.5 ? 9.0 : 5.3;
+            float stepA = 1.0 - exp(-density * dt * extinction * uOpacity);
             accumColor += (1.0 - accumAlpha) * stepA * sampleCol;
             accumAlpha += (1.0 - accumAlpha) * stepA;
             if (accumAlpha > 0.97) break;
@@ -2126,6 +2127,7 @@ export class DemoScene {
     }
     action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
     action.clampWhenFinished = !loop;
+    rig.crouchActions = null;
     const dur = Math.max(0.001, clip.duration || 0.001);
     const wrappedTime = loop ? ((timeSec % dur) + dur) % dur : Math.max(0, Math.min(dur, timeSec));
 
@@ -2195,6 +2197,32 @@ export class DemoScene {
       rig.activeAdditiveAction = null;
       rig.mixer.update(0);
     }
+    return true;
+  }
+
+  _sampleCrouchBlend(rig, names, duck, time) {
+    const clips = names.map((name) => this.operatorClips.get(name));
+    if (!clips.every(Boolean)) return false;
+    const actions = clips.map((clip, i) => {
+      const action = rig.actions.get(names[i]) ?? rig.mixer.clipAction(clip);
+      rig.actions.set(names[i], action);
+      return action;
+    });
+    if (rig.crouchActions?.[0] !== actions[0] || rig.crouchActions?.[1] !== actions[1]) {
+      for (const action of rig.actions.values()) {
+        if (!actions.includes(action)) action.stop();
+      }
+      for (const action of actions) action.reset().play();
+      rig.crouchActions = actions;
+    }
+    for (const [i, action] of actions.entries()) {
+      action.time = time % Math.max(0.001, clips[i].duration);
+      action.setEffectiveWeight(i === 0 ? 1 - duck : duck);
+    }
+    rig.activeAction = null;
+    rig.activeAdditiveAction = null;
+    rig.activeClipName = names[duck > 0.5 ? 1 : 0];
+    rig.mixer.update(0);
     return true;
   }
 
@@ -2512,6 +2540,11 @@ export class DemoScene {
         defusing,
       });
 
+      const crouchBlend = THREE.MathUtils.clamp(duck, 0, 1);
+      const crouchPair = crouchBlend > 0 && crouchBlend < 1 && Math.abs(vz) <= 95 &&
+        !planting && !defusing && !clips.worldAction
+        ? [0, 1].map((duck) => resolveOperatorClipNames({ weaponKey, weaponCat, team, duck, speed, vx, vy, vz, yawDeg }).worldBase)
+        : null;
       let chosenClip = clips.worldBase;
       let chosenTime = demoTimeSec + rig.slot * 0.37;
       let chosenLoop = true;
@@ -2531,6 +2564,7 @@ export class DemoScene {
       }
 
       if (
+        (crouchPair && this._sampleCrouchBlend(rig, crouchPair, crouchBlend, chosenTime)) ||
         this._playClipOnRig(rig, chosenClip, {
           timeSec: chosenTime,
           loop: chosenLoop,
@@ -2592,6 +2626,7 @@ export class DemoScene {
     }
 
     if (hasClips && dead) {
+      rig.crouchActions = null;
       for (const act of rig.actions.values()) act.stop();
       rig.activeAction = null;
       rig.activeAdditiveAction = null;
@@ -3032,7 +3067,7 @@ export class DemoScene {
       this.renderer.info.reset();
       this.renderer.clear();
       this.renderer.render(this.scene, this.camera);
-      if (this.xray) this.playerOutline.render(this.camera);
+      if (this.xray && !snapshot?.insideSmoke) this.playerOutline.render(this.camera);
       if (this.cameraMode === 'pov' && this.viewModelGroup.visible) {
         if (this.vmSunLight) {
           const camInvQ = (this._tmpCamInvQ || (this._tmpCamInvQ = new THREE.Quaternion())).copy(this.camera.quaternion).invert();
@@ -3078,6 +3113,7 @@ export class DemoScene {
         viewModelFov: this.vmCamera.fov,
         alivePlayers: snapshot ? snapshot.players.filter((p) => p && p[0] === 1).length : 0,
         activeSmokes: this._activeSmokeCount,
+        insideSmoke: !!snapshot?.insideSmoke,
         activeGrenades: this._activeGrenadeCount,
         activeInfernos: this._activeInfernoCount,
         activeTracers: this._activeTracerCount,
@@ -3451,7 +3487,7 @@ export class DemoScene {
           rig.worldWeaponGroup.updateMatrixWorld(true);
           rig.bones.wpn.getWorldPosition(wpnWPos);
           rig.worldWeaponGroup.worldToLocal(wpnWPos);
-          pivotChild.position.copy(wpnWPos);
+          pivotChild.position.copy(wpnWPos).multiplyScalar(1 - THREE.MathUtils.smoothstep(duck, 0.1, 0.9));
         } else if (
           (wCat === 'rifle' || wCat === 'sniper' || wCat === 'smg' || wCat === 'heavy') &&
           rig.bones.hand_L
@@ -3756,9 +3792,10 @@ export class DemoScene {
     // Volumetric Multi-Puff CS2 Smokes (Fresnel soft-edge grey cloud shader, <= 144u radius)
     const activeSmokes = [];
     let smokeIdx = 0;
+    snap.insideSmoke = false;
     for (const sm of this.roundReplay.smokes || []) {
       const env = smokeEnvelope(sm, tick, tickRate);
-      if (!env.active) continue;
+      if (!env.active || env.opacity <= 0) continue;
       activeSmokes.push(sm);
       const item = this._getSmokePoolItem(smokeIdx++);
       const [sx, sy, sz] = cs2ToThree(sm.position[0], sm.position[1], sm.position[2] + 54);
@@ -3771,6 +3808,7 @@ export class DemoScene {
       const cameraLocal = item.smokeMat.uniforms.uCameraLocal.value.copy(this.camera.position).applyMatrix4(smokeInverse);
       item.smokeMat.uniforms.uSunLocal.value.copy(SUN_DIR).transformDirection(smokeInverse);
       const inside = cameraLocal.lengthSq() < 1;
+      snap.insideSmoke ||= cameraLocal.lengthSq() < 0.68 && env.opacity > 0.5;
       item.smokeMat.uniforms.uInside.value = inside ? 1.0 : 0.0;
       const wantSide = inside ? THREE.BackSide : THREE.FrontSide;
       if (item.smokeMat.side !== wantSide) {
@@ -3999,7 +4037,7 @@ export class DemoScene {
 
   _update2DOverlays(snap) {
     if (!this.overlayEl || !snap) return;
-    if (!this.playerLabels) {
+    if (!this.playerLabels || snap.insideSmoke) {
       for (const rig of this.playerRigs) if (rig.labelEl) rig.labelEl.style.display = 'none';
       return;
     }

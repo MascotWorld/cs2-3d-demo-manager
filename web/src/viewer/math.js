@@ -179,15 +179,14 @@ export function interpolateFrames(frames, tickFloat) {
 }
 
 export function smokeEnvelope(smoke, tick, tickRate = 64) {
-  if (!smoke || tick < smoke.start_tick || tick > smoke.end_tick) {
+  const end = smoke?.end_tick > smoke?.start_tick ? smoke.end_tick : smoke?.start_tick + 18 * tickRate;
+  if (!smoke || tick < smoke.start_tick || tick > end) {
     return { active: false, scale: 0, opacity: 0 };
   }
-  const fadeTicks = Math.max(8, Math.round(0.6 * tickRate));
-  const sinceStart = tick - smoke.start_tick;
-  const untilEnd = smoke.end_tick - tick;
-  const grow = Math.min(1, sinceStart / fadeTicks);
-  const fade = Math.min(1, untilEnd / fadeTicks);
-  const env = Math.max(0.05, Math.min(grow, fade));
+  const smooth = (x) => x * x * (3 - 2 * x);
+  const grow = smooth(Math.min(1, (tick - smoke.start_tick) / (0.75 * tickRate)));
+  const fade = smooth(Math.min(1, (end - tick) / tickRate));
+  const env = grow * fade;
   return {
     active: true,
     scale: 0.35 + 0.65 * grow,
