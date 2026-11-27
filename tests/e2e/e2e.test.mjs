@@ -226,6 +226,37 @@ async function assertNativeHudLayout(page, mode) {
   assert.ok(layout.icons > 0, 'HUD must draw weapon icons for living players');
   assert.ok(layout.nativeIcons > 0, 'HUD must serve the local Valve equipment icons when the assets are installed');
   assert.ok(layout.nativeFonts.length >= 2, `Local CS2 fonts must load in the browser, got ${layout.nativeFonts.join(', ')}`);
+
+    // Native CS2-style playback transport along the bottom of the frame.
+    const transport = await page.evaluate(() => {
+      const panel = document.getElementById('cs2-transport');
+      const r = panel?.getBoundingClientRect();
+      const timeline = document.getElementById('cs2-transport-timeline')?.getBoundingClientRect();
+      return {
+        panel: r ? { left: r.left, right: r.right, top: r.top, bottom: r.bottom } : null,
+        timeline: timeline ? { top: timeline.top, height: timeline.height } : null,
+        rounds: document.querySelectorAll('.cs2-transport-round').length,
+        markers: document.querySelectorAll('.cs2-transport-marker').length,
+        playhead: !!document.querySelector('.cs2-transport-playhead'),
+        speeds: [...document.querySelectorAll('.cs2-transport-speed-btn')].map((b) => b.textContent),
+        tick: document.getElementById('cs2-transport-tick')?.textContent || '',
+        time: document.getElementById('cs2-transport-time')?.textContent || '',
+        buttons: ['cs2-btn-play', 'cs2-btn-step-back', 'cs2-btn-step-fwd', 'cs2-btn-skip-back',
+          'cs2-btn-skip-fwd', 'cs2-btn-prev-round', 'cs2-btn-next-round',
+          'cs2-btn-prev-player', 'cs2-btn-next-player'].every((id) => !!document.getElementById(id)),
+      };
+    });
+    assert.ok(transport.panel, 'The playback transport must render');
+    assert.ok(transport.panel.bottom <= layout.stage.height + 1 && transport.panel.top > layout.stage.height * 0.85,
+      `Transport must sit along the bottom of the frame, got ${JSON.stringify(transport.panel)}`);
+    assert.ok(transport.timeline && transport.timeline.height > 4, 'Transport must carry a timeline band');
+    assert.ok(transport.rounds >= 1, 'Timeline must show round segments');
+    assert.ok(transport.playhead, 'Timeline must show a playhead');
+    assert.ok(transport.markers >= 1, 'Timeline must show kill and bomb markers');
+    assert.equal(transport.speeds.length, 8, 'Speed selector must offer 0.1x through 8x');
+    assert.match(transport.tick, /^\d{6}$/, `Transport must show a six-digit tick, got ${transport.tick}`);
+    assert.match(transport.time, /\d+:\d+ \/ \d+:\d+/, `Transport must show elapsed and total time, got ${transport.time}`);
+    assert.ok(transport.buttons, 'Transport must expose every playback control');
   if (mode === 'pov') {
     assert.equal(layout.radarRadius, layout.povRecording ? '50%' : '0px', `Radar follows the recording: round only for POV recordings, square for GOTV (got ${layout.radarRadius})`);
     assert.ok(layout.hpPlate && layout.hpPlate.left < layout.stage.width * 0.45, 'Health cluster stays left of center');

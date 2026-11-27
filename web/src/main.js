@@ -363,6 +363,73 @@ function utilityIcons(inventory, className, limit = Infinity) {
   )).slice(0, limit).join('');
 }
 
+// Native CS2-style playback transport: round band timeline with kill/bomb markers,
+// a playhead, play/pause, single-tick steps, 15s skips, round navigation, the clock,
+// the raw tick and the speed selector.
+function updateTransportPanel() {
+  const rr = state.roundReplay;
+  const timeline = document.getElementById('cs2-transport-timeline');
+  const rounds = state.activeDemo?.rounds || [];
+  if (!timeline || !rr?.frames?.length) {
+    if (timeline) timeline.innerHTML = '';
+    return;
+  }
+
+  const minT = rr.frames[0].t;
+  const maxT = rr.frames[rr.frames.length - 1].t;
+  const span = Math.max(1, maxT - minT);
+  const current = sceneInstance?.currentTick ?? minT;
+  const pct = Math.max(0, Math.min(100, ((current - minT) / span) * 100));
+
+  const roundBands = rounds
+    .filter((r) => r.end_tick >= minT && r.start_tick <= maxT)
+    .map((r) => {
+      const left = Math.max(0, ((r.start_tick - minT) / span) * 100);
+      const right = Math.min(100, ((r.end_tick - minT) / span) * 100);
+      const win = r.winner_team === 3 ? 'win-ct' : r.winner_team === 2 ? 'win-t' : '';
+      const cur = r.round_number === state.activeRoundNum ? ' current' : '';
+      return `<span class="cs2-transport-round ${win}${cur}" style="left:${left}%;width:${Math.max(0.6, right - left)}%" title="Round ${r.round_number}${r.win_reason ? ` · ${esc(r.win_reason)}` : ''}">${r.round_number}</span>`;
+    });
+
+  const markers = [];
+  for (const k of rr.kills || []) {
+    const p = ((k.tick - minT) / span) * 100;
+    if (p < 0 || p > 100) continue;
+    const cls = k.killer_team === 3 ? 'marker-kill-ct' : 'marker-kill-t';
+    markers.push(
+      `<span class="cs2-transport-marker ${cls}" style="left:${p}%" title="${esc(k.killer_name)} [${esc(k.weapon)}] ${esc(k.victim_name)} · tick ${k.tick}" data-tick="${k.tick}"></span>`
+    );
+  }
+  for (const be of rr.bomb_events || []) {
+    if (!['planted', 'defused', 'exploded'].includes(be.type)) continue;
+    const p = ((be.tick - minT) / span) * 100;
+    if (p < 0 || p > 100) continue;
+    markers.push(
+      `<span class="cs2-transport-marker marker-bomb" style="left:${p}%" title="Bomb ${esc(be.type)}${be.site ? ` ${esc(be.site)}` : ''} · tick ${be.tick}" data-tick="${be.tick}"></span>`
+    );
+  }
+
+  const html = `${roundBands.join('')}${markers.join('')}<span class="cs2-transport-playhead" style="left:${pct}%"></span>`;
+  if (timeline.innerHTML !== html) timeline.innerHTML = html;
+
+  const rate = rr.tick_rate || 64;
+  const elapsed = (current - minT) / rate;
+  const total = (maxT - minT) / rate;
+  const timeEl = document.getElementById('cs2-transport-time');
+  if (timeEl) timeEl.textContent = `${formatClock(Math.max(0, elapsed))} / ${formatClock(total)}`;
+  const tickEl = document.getElementById('cs2-transport-tick');
+  if (tickEl) tickEl.textContent = String(Math.round(current)).padStart(6, '0');
+  const roundEl = document.getElementById('cs2-transport-round');
+  if (roundEl) roundEl.textContent = `R${state.activeRoundNum}`;
+  const playerEl = document.getElementById('cs2-transport-player');
+  if (playerEl) {
+    const name = state.activeDemo?.players?.find((p) => p.slot === state.povSlot)?.name;
+    playerEl.textContent = name || '—';
+  }
+  const playEl = document.getElementById('cs2-btn-play');
+  if (playEl) playEl.textContent = sceneInstance?.playing ? 'PAUSE' : 'PLAY';
+}
+
 function updateMatchHeaderScoreboard() {
   const strip = document.getElementById('match-scoreboard-strip');
   if (!state.activeDemo) return;
@@ -560,6 +627,8 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
   }
 
   updateMatchHeaderScoreboard();
+
+  updateTransportPanel();
 
   // Round Clock + Bomb Plant/Defuse Bar
   const clockBox = document.getElementById('round-clock-box');
@@ -1118,6 +1187,37 @@ function renderViewerView() {
         </div>
         <div class="cs2-killfeed" id="killfeed-list" aria-label="Kill feed"></div>
         <span class="cs2-round-strip" id="match-scoreboard-strip" hidden></span>
+
+        <div class="cs2-transport" id="cs2-transport" aria-label="Playback controls">
+          <div class="cs2-transport-timeline" id="cs2-transport-timeline"></div>
+          <div class="cs2-transport-row">
+            <button type="button" class="cs2-transport-btn primary" id="cs2-btn-play" title="Play / pause (Space)">PLAY</button>
+            <button type="button" class="cs2-transport-btn" id="cs2-btn-step-back" title="Step back one tick">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11 2 4 8l7 6zm-7 0h2v12H4z"/></svg>
+            </button>
+            <button type="button" class="cs2-transport-btn" id="cs2-btn-step-fwd" title="Step forward one tick">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2l7 6-7 6zm7 0h2v12h-2z"/></svg>
+            </button>
+            <button type="button" class="cs2-transport-btn" id="cs2-btn-skip-back" title="Back 15 seconds">&minus;15s</button>
+            <button type="button" class="cs2-transport-btn" id="cs2-btn-skip-fwd" title="Forward 15 seconds">+15s</button>
+            <span class="cs2-transport-sep" aria-hidden="true"></span>
+            <span class="cs2-transport-round-nav">
+              <button type="button" class="cs2-transport-btn" id="cs2-btn-prev-round" title="Previous round">&lsaquo;</button>
+              <span id="cs2-transport-round">R1</span>
+              <button type="button" class="cs2-transport-btn" id="cs2-btn-next-round" title="Next round">&rsaquo;</button>
+            </span>
+            <span class="cs2-transport-sep" aria-hidden="true"></span>
+            <span class="cs2-transport-round-nav">
+              <button type="button" class="cs2-transport-btn" id="cs2-btn-prev-player" title="Previous player">&lsaquo;</button>
+              <span id="cs2-transport-player">—</span>
+              <button type="button" class="cs2-transport-btn" id="cs2-btn-next-player" title="Next player">&rsaquo;</button>
+            </span>
+            <span class="cs2-transport-sep" aria-hidden="true"></span>
+            <span class="cs2-transport-time" id="cs2-transport-time">0:00 / 0:00</span>
+            <span class="cs2-transport-tick" id="cs2-transport-tick">000000</span>
+            <span class="cs2-transport-speed" id="cs2-transport-speed" role="group" aria-label="Playback speed"></span>
+          </div>
+        </div>
       </div>
       <details class="demo-tools" id="demo-tools" ${state.showDemoControls ? 'open' : ''}>
         <summary class="demo-tools-toggle">Demo UI <kbd>Shift+F2</kbd></summary>
@@ -1683,6 +1783,66 @@ function mountAndBindViewer() {
   });
 
   document.getElementById('btn-play')?.addEventListener('click', togglePlayback);
+
+  // Native transport bar (CS2 demo player style)
+  const transportTimeline = document.getElementById('cs2-transport-timeline');
+  const transportStep = (delta) => {
+    if (!sceneInstance || !state.roundReplay?.frames?.length) return;
+    const minT = state.roundReplay.frames[0].t;
+    const maxT = state.roundReplay.frames[state.roundReplay.frames.length - 1].t;
+    sceneInstance.playing = false;
+    sceneInstance.currentTick = Math.max(minT, Math.min(maxT, sceneInstance.currentTick + delta));
+  };
+  const transportSkip = (seconds) => {
+    if (!sceneInstance || !state.roundReplay) return;
+    seekMatchTick(sceneInstance.currentTick + seconds * state.roundReplay.tick_rate);
+  };
+  document.getElementById('cs2-btn-play')?.addEventListener('click', togglePlayback);
+  document.getElementById('cs2-btn-step-back')?.addEventListener('click', () => transportStep(-1));
+  document.getElementById('cs2-btn-step-fwd')?.addEventListener('click', () => transportStep(1));
+  document.getElementById('cs2-btn-skip-back')?.addEventListener('click', () => transportSkip(-15));
+  document.getElementById('cs2-btn-skip-fwd')?.addEventListener('click', () => transportSkip(15));
+  document.getElementById('cs2-btn-prev-round')?.addEventListener('click', () => {
+    const rounds = state.activeDemo?.rounds || [];
+    const prev = [...rounds].reverse().find((r) => r.round_number < state.activeRoundNum);
+    if (prev) switchRound(prev.round_number);
+  });
+  document.getElementById('cs2-btn-next-round')?.addEventListener('click', () => {
+    const rounds = state.activeDemo?.rounds || [];
+    const next = rounds.find((r) => r.round_number > state.activeRoundNum);
+    if (next) switchRound(next.round_number);
+  });
+  document.getElementById('cs2-btn-prev-player')?.addEventListener('click', () => cycleSpectator(-1));
+  document.getElementById('cs2-btn-next-player')?.addEventListener('click', () => cycleSpectator(1));
+  transportTimeline?.addEventListener('click', (e) => {
+    if (!sceneInstance || !state.roundReplay?.frames?.length) return;
+    if (e.target.classList.contains('cs2-transport-marker')) {
+      const t = Number(e.target.dataset.tick);
+      if (!Number.isNaN(t)) sceneInstance.currentTick = t;
+      return;
+    }
+    const rect = transportTimeline.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const minT = state.roundReplay.frames[0].t;
+    const maxT = state.roundReplay.frames[state.roundReplay.frames.length - 1].t;
+    sceneInstance.playing = false;
+    sceneInstance.currentTick = Math.round(minT + ratio * (maxT - minT));
+  });
+  const transportSpeed = document.getElementById('cs2-transport-speed');
+  if (transportSpeed) {
+    transportSpeed.innerHTML = SPEEDS.map((sp) =>
+      `<button type="button" class="cs2-transport-speed-btn${state.playbackSpeed === sp ? ' active' : ''}" data-speed="${sp}">${sp}x</button>`
+    ).join('');
+    transportSpeed.querySelectorAll('[data-speed]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.playbackSpeed = Number(btn.dataset.speed) || 1;
+        if (sceneInstance) sceneInstance.playbackSpeed = state.playbackSpeed;
+        transportSpeed.querySelectorAll('[data-speed]').forEach((b) => b.classList.toggle('active', b === btn));
+        const traySpeed = document.getElementById('select-speed');
+        if (traySpeed) traySpeed.value = String(state.playbackSpeed);
+      });
+    });
+  }
   document.getElementById('match-timeline-scrubber')?.addEventListener('change', (e) => seekMatchTick(Number(e.target.value)));
   for (const [id, seconds] of [['btn-skip-back', -15], ['btn-skip-fwd', 15]]) {
     document.getElementById(id)?.addEventListener('click', () => {
