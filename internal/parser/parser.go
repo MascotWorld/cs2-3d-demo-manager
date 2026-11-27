@@ -242,14 +242,25 @@ func appendPauseChange(states []RoundPause, state RoundPause, rate float64) []Ro
 	return append(states, state)
 }
 
-func packUtilityCounts(pl *common.Player) int {
-	if pl == nil {
-		return 0
-	}
+func playerLoadout(pl *common.Player, active *common.Equipment) (int, [3]*common.Equipment) {
+	var slots [3]*common.Equipment
 	var smoke, flash, he, molly, decoy, c4 int
-	for _, w := range pl.Weapons() {
+	for _, w := range pl.Inventory {
 		if w == nil {
 			continue
+		}
+		slot := -1
+		switch w.Class() {
+		case common.EqClassPistols:
+			slot = 1
+		case common.EqClassSMG, common.EqClassHeavy, common.EqClassRifle:
+			slot = 0
+		}
+		if w.Type == common.EqKnife {
+			slot = 2
+		}
+		if slot >= 0 && (slots[slot] == nil || w == active || (slots[slot] != active && w.Type < slots[slot].Type)) {
+			slots[slot] = w
 		}
 		switch w.Type {
 		case common.EqSmoke:
@@ -280,7 +291,7 @@ func packUtilityCounts(pl *common.Player) int {
 		clamp9(he)*100 +
 		clamp9(molly)*1000 +
 		clamp9(decoy)*10000 +
-		clamp9(c4)*100000
+		clamp9(c4)*100000, slots
 }
 
 func readAimPunch(pawn st.Entity) (float64, float64) {
@@ -336,6 +347,8 @@ func ParseDemo(demoID string, demoPath string) (*ParsedMatch, error) {
 		summary       RoundSummary
 		weaponIndex   map[string]int
 		weapons       []string
+		places        []string
+		placeIndex    map[string]int
 		kills         []KillEvent
 		shots         []ShotEvent
 		hurts         []HurtEvent
@@ -1066,7 +1079,7 @@ func ParseDemo(demoID string, demoPath string) (*ParsedMatch, error) {
 			if pl == nil {
 				playersTuple[slot] = []float64{
 					0, float64(ps.Team), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, 0,
-					0, -1, -1, 0, 0, 0, 0, float64(cur.roundKills[slot]),
+					0, -1, -1, 0, 0, 0, 0, float64(cur.roundKills[slot]), -1, -1, -1, -1,
 				}
 				continue
 			}
@@ -1144,13 +1157,29 @@ func ParseDemo(demoID string, demoPath string) (*ParsedMatch, error) {
 				flags |= 32
 			}
 
+			utility, slots := playerLoadout(pl, aw)
+			placeIdx := -1
+			if place := pl.LastPlaceName(); place != "" {
+				if cur.placeIndex == nil {
+					cur.placeIndex = make(map[string]int)
+				}
+				if idx, ok := cur.placeIndex[place]; ok {
+					placeIdx = idx
+				} else {
+					placeIdx = len(cur.places)
+					cur.places = append(cur.places, place)
+					cur.placeIndex[place] = placeIdx
+				}
+			}
 			playersTuple[slot] = []float64{
 				alive, team, x, y, z, yaw, pitch, hp, armor, duck, zoomLevel,
 				flashFrac, flashAlpha, float64(wIdx), float64(flags),
 				float64(max(0, pl.Money())), ammoMag, ammoRes,
 				float64(max(0, pl.EquipmentValueCurrent())),
-				float64(packUtilityCounts(pl)),
+				float64(utility),
 				punchPitch, punchYaw, float64(cur.roundKills[slot]),
+				float64(weaponIdx(cur, equipmentName(slots[0]))), float64(weaponIdx(cur, equipmentName(slots[1]))),
+				float64(weaponIdx(cur, equipmentName(slots[2]))), float64(placeIdx),
 			}
 		}
 		clear(cur.firedThisTick)
@@ -1341,6 +1370,7 @@ func ParseDemo(demoID string, demoPath string) (*ParsedMatch, error) {
 			Pauses:        r.pauses,
 			Summary:       r.summary,
 			Weapons:       r.weapons,
+			Places:        r.places,
 			Kills:         r.kills,
 			Shots:         r.shots,
 			Hurts:         r.hurts,

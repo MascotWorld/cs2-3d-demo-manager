@@ -643,6 +643,11 @@ async function run() {
     await page.keyboard.press('KeyN');
     await page.waitForFunction(() => [...document.querySelectorAll('.player-3d-tag')].every((el) => el.style.display === 'none'));
     await assertNativeHudLayout(page, 'tactical');
+    await page.waitForFunction(() => {
+      const portraits = [...document.querySelectorAll('.hud-operator-portrait')];
+      return portraits.length === 10 && portraits.every((img) => img.complete && img.naturalWidth === 128)
+        && new Set(portraits.map((img) => img.src)).size === 2;
+    });
     await shot(page, '02-viewer-tactical.png');
     await page.keyboard.press('F3');
     await page.waitForFunction(() => {
@@ -824,6 +829,25 @@ async function run() {
     await page.waitForTimeout(150);
     await assertTagsAndHudClean(page, '04-viewer-pov');
     await assertNativeHudLayout(page, 'pov');
+    await page.waitForFunction(() => document.querySelector('#pov-inventory .pov-slot.active'));
+    const povTelemetry = await page.evaluate(() => {
+      const s = window.__CS2_SCENE__;
+      const frame = s.roundReplay.frames.findLast((f) => f.t <= s.currentTick);
+      const player = frame.p[s.povSlot];
+      const place = s.roundReplay.places?.[player[26]];
+      return {
+        place,
+        label: document.getElementById('radar-label').textContent,
+        slotCount: document.querySelectorAll('#pov-inventory .pov-slot').length,
+        recorded: player.slice(23, 26).filter((key) => key >= 0).length,
+      };
+    });
+    assert.ok(povTelemetry.recorded >= 2, 'Replay should include more than just the equipped weapon');
+    assert.equal(povTelemetry.slotCount, povTelemetry.recorded);
+    if (povTelemetry.place) {
+      assert.equal(povTelemetry.label.replace(/[^a-z0-9]/gi, ''),
+        povTelemetry.place.replace(/[^a-z0-9]/gi, ''));
+    }
     await shot(page, '04-viewer-pov.png');
 
     // Capture 1:1 CS2 Blind white screen at active flash tick

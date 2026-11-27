@@ -1,5 +1,6 @@
 import './styles.css';
 import './viewer/hud.css';
+import { operatorPortraits } from './viewer/portraits.js';
 import { api } from './api.js';
 import { DemoScene } from './viewer/scene.js';
 import { RadarRenderer } from './viewer/radar.js';
@@ -8,6 +9,7 @@ import {
   formatClock,
   computeRoundClock,
   isSniperWeapon,
+  weaponCategory,
   unpackUtilityCounts,
   cycleAliveSlot,
   interpolateFrames,
@@ -319,10 +321,12 @@ function renderTeamSideHudPanels() {
     else tPlayers.push(p);
   }
 
-  const rowHtml = (p) => `
+  const portraits = operatorPortraits([[3, sceneInstance?.ctPlayerTemplate], [2, sceneInstance?.tPlayerTemplate]]);
+  const rowHtml = (p, portrait) => `
     <button type="button" class="hud-player-row" id="hud-player-${p.slot}" data-pov-slot="${p.slot}" title="${esc(p.name)}" aria-label="Spectate ${esc(p.name)}">
       <span class="hud-player-name">${esc(p.name)}</span>
-      <span class="hud-player-frame" data-slot="${(p.slot + 1) % 10}">
+      <span class="hud-player-frame${portrait ? ' has-portrait' : ''}" data-slot="${(p.slot + 1) % 10}">
+        ${portrait ? `<img class="hud-operator-portrait" src="${portrait}" alt="">` : ''}
         <span class="hud-hp-num">100</span>
         <span class="hud-player-weapon"></span>
         <span class="hud-sq-gear"></span>
@@ -332,8 +336,8 @@ function renderTeamSideHudPanels() {
     </button>
   `;
 
-  ctEl.innerHTML = ctPlayers.map(rowHtml).join('');
-  tEl.innerHTML = tPlayers.map(rowHtml).join('');
+  ctEl.innerHTML = ctPlayers.map((p) => rowHtml(p, portraits.get(3))).join('');
+  tEl.innerHTML = tPlayers.map((p) => rowHtml(p, portraits.get(2))).join('');
 
   document.querySelectorAll('[data-pov-slot]').forEach((el) => {
     el.addEventListener('click', () => {
@@ -637,6 +641,11 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
   const weapons = rr?.weapons || [];
   const obsSlot = snapshot?.observedSlot ?? state.povSlot;
   const obs = state.cameraMode === 'pov' ? snapshot?.players?.[obsSlot] : null;
+  const radarPlayer = state.cameraMode === 'chase' ? snapshot?.players?.[obsSlot] : obs;
+  const place = radarPlayer?.[0] === 1 ? rr?.places?.[radarPlayer[26]] : '';
+  document.getElementById('radar-label').textContent = place
+    ? place.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replaceAll('_', ' ')
+    : state.activeDemo.metadata.map_name;
   const obsAlive = !!(obs && obs[0] === 1 && (obs[7] || 0) > 0);
   const damage = document.getElementById('pov-damage');
   if (damage) {
@@ -661,6 +670,22 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
   }
   const obsWeapon = obs && obs[13] >= 0 && weapons[obs[13]] ? weapons[obs[13]] : '';
   const obsZoom = obs ? obs[10] || 0 : 0;
+  const inventory = document.getElementById('pov-inventory');
+  inventory.hidden = state.cameraMode !== 'pov' || !obsAlive || !!snapshot?.deathCamActive;
+  if (!inventory.hidden) {
+    const slots = [weapons[obs[23]], weapons[obs[24]], weapons[obs[25]]];
+    if (obsWeapon && !slots.includes(obsWeapon)) {
+      const category = weaponCategory(obsWeapon);
+      if (category === 'pistol') slots[1] ??= obsWeapon;
+      else if (category === 'knife') slots[2] ??= obsWeapon;
+      else if (['rifle', 'sniper', 'heavy', 'smg'].includes(category)) slots[0] ??= obsWeapon;
+    }
+    const flags = obs[14] || 0;
+    const inventoryHtml = slots.map((weapon, i) => weapon ? `<div class="pov-slot${weapon === obsWeapon ? ' active' : ''}"><div class="pov-slot-glyph">${weaponSvgIcon(weapon, 'pov-slot-icon')}<span>${i + 1}</span></div>${weapon === obsWeapon ? `<span class="pov-slot-name">${esc(weapon)}</span>` : ''}</div>` : '').join('') +
+      `<div class="pov-slot-utility">${utilityIcons(unpackUtilityCounts(obs[19] || 0), 'pov-util-icon')}${flags & 2 ? defuseKitIcon('pov-kit-ico') : ''}</div>`;
+    if (inventory.innerHTML !== inventoryHtml) inventory.innerHTML = inventoryHtml;
+    inventory.classList.toggle('team-ct', obs[1] === 3);
+  }
   const sniperScoped = state.cameraMode === 'pov' && obsAlive && isSniperWeapon(obsWeapon) && obsZoom > 0;
 
   // Crosshair & Sniper Scope overlay
@@ -717,7 +742,6 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
       const hasKit = (flags & 2) !== 0;
       const mag = obs[16] >= 0 ? Math.round(obs[16]) : null;
       const res = obs[17] >= 0 ? Math.round(obs[17]) : null;
-      const util = unpackUtilityCounts(obs[19] || 0);
       const money = document.getElementById('pov-hud-money');
       money.textContent = obs[15] >= 0 ? `${Math.round(obs[15])}` : '';
 
@@ -733,7 +757,6 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
       const arEl = document.getElementById('pov-hud-armor');
       const wEl = document.getElementById('pov-hud-weapon');
       const ammoEl = document.getElementById('pov-hud-ammo');
-      const utilEl = document.getElementById('pov-hud-util');
       if (hpEl) {
         hpEl.innerHTML = `${hpCrossIcon('pov-hp-cross')}<span>${hp}</span>`;
         hpEl.className = 'pov-hp-big';
@@ -753,7 +776,6 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
           ? `<span class="ammo-mag">${mag}</span><span class="ammo-sep">/</span><span class="ammo-res">${res ?? 0}</span>`
           : '';
       }
-      if (utilEl) utilEl.innerHTML = utilityIcons(util, 'pov-util-icon');
     } else if (state.cameraMode === 'pov' && (snapshot?.deathCamActive || (state.cameraMode === 'pov' && obs && !obsAlive))) {
       const killEv = (rr?.kills || []).find((k) => k.victim_slot === obsSlot && k.tick <= rounded);
       povHud.style.display = 'flex';
@@ -763,7 +785,6 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
       const arEl = document.getElementById('pov-hud-armor');
       const wEl = document.getElementById('pov-hud-weapon');
       const ammoEl = document.getElementById('pov-hud-ammo');
-      const utilEl = document.getElementById('pov-hud-util');
       if (hpEl) {
         hpEl.innerHTML = `${skullIcon('pov-hp-cross')}<span>0</span>`;
         hpEl.className = 'pov-hp-big dead';
@@ -776,7 +797,6 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
           : `<span>ELIMINATED</span>`;
       }
       if (ammoEl) ammoEl.innerHTML = killEv ? weaponSvgIcon(killEv.weapon, 'pov-w-svg') : '';
-      if (utilEl) utilEl.innerHTML = '';
     } else {
       povHud.style.display = 'none';
     }
@@ -1060,7 +1080,7 @@ function renderViewerView() {
 
         <div class="radar-box">
           <canvas id="radar-canvas" width="184" height="184"></canvas>
-          <span class="radar-label">${esc(meta.map_name)}</span>
+          <span class="radar-label" id="radar-label">${esc(meta.map_name)}</span>
           <span class="radar-level-badge" id="radar-level-badge">UPPER</span>
         </div>
 
@@ -1086,6 +1106,7 @@ function renderViewerView() {
           <aside class="team-hud t" id="team-hud-t" aria-label="Terrorists"></aside>
         </div>
 
+        <div class="pov-inventory" id="pov-inventory" aria-label="Observed player equipment" hidden></div>
         <div class="pov-bottom-hud" id="pov-bottom-hud">
           <span class="pov-money" id="pov-hud-money"></span>
           <div class="pov-left-wing">
@@ -1101,7 +1122,6 @@ function renderViewerView() {
             <span id="pov-observer-weapon"></span>
           </div>
           <div class="pov-right-wing">
-            <div class="pov-util-strip" id="pov-hud-util"></div>
             <div class="pov-weapon-ammo-row">
               <span class="pov-weapon-name" id="pov-hud-weapon">AK-47</span>
               <span class="pov-ammo-text" id="pov-hud-ammo">30 / 90</span>

@@ -173,6 +173,8 @@ type BombEvent struct {
 //	[20] aimPunchPitch
 //	[21] aimPunchYaw
 //	[22] roundKills
+//	[23:26] primary, secondary, knife indices into RoundReplay.Weapons (-1 if absent)
+//	[26] place index into RoundReplay.Places (-1 if unavailable)
 type Frame struct {
 	Tick    int         `json:"t"`
 	Bomb    [5]float64  `json:"b"` // [x, y, z, carrierSlot(-1 if none), state(0=idle/dropped,1=carried,2=planting,3=planted,4=defused,5=exploded)]
@@ -204,6 +206,7 @@ type RoundReplay struct {
 	Pauses        []RoundPause   `json:"pauses,omitempty"`
 	Summary       RoundSummary   `json:"summary"`
 	Weapons       []string       `json:"weapons"`
+	Places        []string       `json:"places,omitempty"`
 	Kills         []KillEvent    `json:"kills"`
 	Shots         []ShotEvent    `json:"shots"`
 	Hurts         []HurtEvent    `json:"hurts"`
