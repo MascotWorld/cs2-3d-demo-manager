@@ -389,9 +389,16 @@ table.demo-table tr:hover td {
 
 
 .software-renderer-warning {
-  padding: 7px 12px;
-  border-bottom: 1px solid #8c6526;
-  background: #35270d;
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  z-index: 35;
+  pointer-events: none;
+  padding: 5px 12px;
+  border: 1px solid #8c6526;
+  border-radius: 3px;
+  background: rgba(53, 39, 13, 0.9);
   color: #ffe3a9;
   font-size: 12px;
 }
