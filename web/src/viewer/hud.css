@@ -41,7 +41,7 @@
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  width: 72px;
+  width: clamp(28px, 5.0vh, 64px);
   padding: 0;
   background: none;
   border: 0;
@@ -73,8 +73,8 @@
 .hud-player-frame {
   position: relative;
   display: block;
-  height: 56px;
-  background: var(--hud-panel);
+  aspect-ratio: 1;
+  background: linear-gradient(rgba(12, 13, 15, .55), rgba(12, 13, 15, .24));
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-top: 2px solid rgba(255, 255, 255, 0.22);
 }
@@ -88,29 +88,23 @@
 }
 
 .hud-player-frame::after {
-  content: '';
+  content: attr(data-slot);
   position: absolute;
-  inset: 7px 16px 19px;
-  background:
-    radial-gradient(circle at 50% 34%, rgba(235, 240, 246, 0.42) 0 5px, transparent 5.6px),
-    radial-gradient(ellipse 62% 44% at 50% 100%, rgba(235, 240, 246, 0.34) 0 100%, transparent 100%);
-  opacity: 0.5;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding-bottom: 8px;
+  color: rgba(255, 255, 255, .28);
+  font: 700 clamp(12px, 2.4vh, 26px)/1 var(--hud-font);
   pointer-events: none;
-}
-
-.hud-sq-slot {
-  position: absolute;
-  top: 1px;
-  left: 3px;
-  font: 700 10px/1 var(--hud-digits);
-  color: rgba(255, 255, 255, 0.55);
-  z-index: 1;
 }
 
 .hud-sq-gear {
   position: absolute;
-  top: 2px;
-  right: 3px;
+  top: calc(100% + 13px);
+  left: 0;
+  right: 0;
+  justify-content: center;
   display: flex;
   gap: 2px;
   align-items: center;
@@ -129,8 +123,9 @@
 
 .hud-player-weapon {
   position: absolute;
-  right: 3px;
-  bottom: 3px;
+  left: 50%;
+  top: 100%;
+  transform: translateX(-50%);
   display: flex;
   align-items: center;
   gap: 2px;
@@ -191,7 +186,7 @@
 
 .hud-money {
   display: none;
-  margin-top: 1px;
+  margin-top: 23px;
   background: rgba(0, 0, 0, 0.5);
   text-align: center;
   font: 600 10px/14px var(--hud-digits);
@@ -236,20 +231,20 @@
 }
 
 .round-clock-box {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
   align-items: center;
-  justify-content: center;
-  gap: 10px;
-  min-width: 106px;
-  padding: 3px 10px;
-  background: rgba(6, 8, 11, 0.72);
+  row-gap: 3px;
+  min-width: clamp(56px, 8vh, 96px);
+  padding: 0 0 3px;
+  background: linear-gradient(rgba(6, 8, 11, .78), rgba(6, 8, 11, .3));
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .cs2-team-score {
   min-width: 18px;
   text-align: center;
-  font: 700 25px/1 var(--hud-digits);
+  font: 700 clamp(15px, 2.2vh, 24px)/1 var(--hud-digits);
   letter-spacing: -0.01em;
   color: #f2f4f6;
 }
@@ -263,6 +258,10 @@
 }
 
 .cs2-clock-center {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  border-bottom: 1px solid var(--hud-stroke);
+  padding: 2px 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -276,6 +275,10 @@
   letter-spacing: 0.01em;
 }
 
+.round-clock-box[data-phase='live'] .cs2-clock-phase {
+  display: none;
+}
+
 .cs2-clock-phase {
   font-size: 8px;
   font-weight: 700;
@@ -284,20 +287,20 @@
   text-transform: uppercase;
 }
 
-.round-clock-box.planted {
+.round-clock-box[data-phase='planted'] {
   border-color: rgba(226, 96, 88, 0.7);
 }
 
-.round-clock-box.planted #round-clock-text,
-.round-clock-box.planted .cs2-clock-phase {
+.round-clock-box[data-phase='planted'] #round-clock-text,
+.round-clock-box[data-phase='planted'] .cs2-clock-phase {
   color: #f2a5a0;
 }
 
-.round-clock-box.freeze {
+.round-clock-box[data-phase='freeze'] {
   border-color: rgba(151, 175, 208, 0.6);
 }
 
-.round-clock-box.freeze #round-clock-text {
+.round-clock-box[data-phase='freeze'] #round-clock-text {
   color: #cfe0f5;
 }
 
@@ -1114,14 +1117,6 @@
 }
 
 @media (max-width: 1400px) {
-  .hud-player-row {
-    width: 62px;
-  }
-
-  .hud-player-frame {
-    height: 50px;
-  }
-
   .radar-box {
     width: 196px;
     height: 196px;
@@ -1129,10 +1124,6 @@
 }
 
 @media (max-width: 1100px) {
-  .hud-player-row {
-    width: 52px;
-  }
-
   .hud-player-name {
     font-size: 9px;
   }

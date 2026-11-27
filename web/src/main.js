@@ -322,8 +322,7 @@ function renderTeamSideHudPanels() {
   const rowHtml = (p) => `
     <button type="button" class="hud-player-row" id="hud-player-${p.slot}" data-pov-slot="${p.slot}" title="${esc(p.name)}" aria-label="Spectate ${esc(p.name)}">
       <span class="hud-player-name">${esc(p.name)}</span>
-      <span class="hud-player-frame">
-        <span class="hud-sq-slot">${(p.slot + 1) % 10}</span>
+      <span class="hud-player-frame" data-slot="${(p.slot + 1) % 10}">
         <span class="hud-hp-num">100</span>
         <span class="hud-player-weapon"></span>
         <span class="hud-sq-gear"></span>

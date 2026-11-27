@@ -188,7 +188,8 @@ async function assertNativeHudLayout(page, mode) {
     };
   });
   assert.equal(layout.cards, 10, 'Both team card rows must render five players each');
-  assert.ok(layout.card >= 46 && layout.card <= 80, `Teammate card width must match CS2 compact tiles, got ${layout.card}`);
+  assert.ok(Math.abs(layout.card - 45) < 1,
+    `Expected a 45px player tile at the 900px test viewport, got ${layout.card}`);
   assert.ok(layout.top && Math.abs((layout.top.left + layout.top.right) / 2 - layout.stage.width / 2) < 12,
     'Top cards and clock must stay centered');
   assert.ok(layout.ct.right <= layout.clock.left && layout.tteam.left >= layout.clock.right,
