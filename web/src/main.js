@@ -718,8 +718,12 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
       const mag = obs[16] >= 0 ? Math.round(obs[16]) : null;
       const res = obs[17] >= 0 ? Math.round(obs[17]) : null;
       const util = unpackUtilityCounts(obs[19] || 0);
-      const obsMeta = state.activeDemo?.players?.find((pl) => pl.slot === obsSlot);
+      const money = document.getElementById('pov-hud-money');
+      money.textContent = obs[15] >= 0 ? `${Math.round(obs[15])}` : '';
 
+      document.getElementById('pov-observer-name').textContent = state.activeDemo?.players?.find((p) => p.slot === obsSlot)?.name ?? '';
+      document.getElementById('pov-observer-slot').textContent = String((obsSlot + 1) % 10);
+      document.getElementById('pov-observer-weapon').textContent = obsWeapon || 'Knife';
       povHud.style.display = 'flex';
       povHud.classList.toggle('team-ct', isCT);
       povHud.classList.toggle('team-t', !isCT);
@@ -727,7 +731,6 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
       const hpEl = document.getElementById('pov-hud-hp');
       const hpFillEl = document.getElementById('pov-hud-hp-fill');
       const arEl = document.getElementById('pov-hud-armor');
-      const nameEl = document.getElementById('pov-hud-name');
       const wEl = document.getElementById('pov-hud-weapon');
       const ammoEl = document.getElementById('pov-hud-ammo');
       const utilEl = document.getElementById('pov-hud-util');
@@ -741,9 +744,6 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
       if (arEl) {
         arEl.innerHTML = `${armorIcon(hasHelm, 'pov-ar-ico')}<span>${armor}</span>${hasKit ? defuseKitIcon('pov-kit-ico') : ''}`;
       }
-      if (nameEl) {
-        nameEl.textContent = obsMeta?.name || `Player ${obsSlot + 1}`;
-      }
       if (wEl) {
         wEl.innerHTML = weaponSvgIcon(obsWeapon || 'knife', 'pov-w-svg');
         wEl.title = obsWeapon || 'Knife';
@@ -755,14 +755,12 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
       }
       if (utilEl) utilEl.innerHTML = utilityIcons(util, 'pov-util-icon');
     } else if (state.cameraMode === 'pov' && (snapshot?.deathCamActive || (state.cameraMode === 'pov' && obs && !obsAlive))) {
-      const obsMeta = state.activeDemo?.players?.find((pl) => pl.slot === obsSlot);
       const killEv = (rr?.kills || []).find((k) => k.victim_slot === obsSlot && k.tick <= rounded);
       povHud.style.display = 'flex';
       povHud.classList.add('deathcam-mode');
       const hpEl = document.getElementById('pov-hud-hp');
       const hpFillEl = document.getElementById('pov-hud-hp-fill');
       const arEl = document.getElementById('pov-hud-armor');
-      const nameEl = document.getElementById('pov-hud-name');
       const wEl = document.getElementById('pov-hud-weapon');
       const ammoEl = document.getElementById('pov-hud-ammo');
       const utilEl = document.getElementById('pov-hud-util');
@@ -772,7 +770,6 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
       }
       if (hpFillEl) hpFillEl.style.width = '0%';
       if (arEl) arEl.innerHTML = '';
-      if (nameEl) nameEl.textContent = obsMeta?.name || `Player ${obsSlot + 1}`;
       if (wEl) {
         wEl.innerHTML = killEv
           ? `<span>KILLED BY ${esc(killEv.killer_name)}</span>`
@@ -787,7 +784,13 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
 
   // Top CS2 Player Squares indexed strictly by `player.slot`
   if (snapshot && state.activeDemo) {
-    const buyPhase = document.getElementById('round-clock-box')?.dataset.phase === 'freeze';
+    const buyPhase = clockInfo?.phase === 'freeze';
+    const aliveBySide = [0, 0, 0, 0];
+    for (const p of snapshot.players) {
+      if (p?.[0] === 1 && p[7] > 0 && (p[1] === 2 || p[1] === 3)) aliveBySide[p[1]]++;
+    }
+    document.getElementById('hud-alive-ct').textContent = aliveBySide[3];
+    document.getElementById('hud-alive-t').textContent = aliveBySide[2];
     document.querySelector('.native-top-hud')?.classList.toggle('money-visible', buyPhase);
     for (const player of state.activeDemo.players) {
       const slot = player.slot;
@@ -1071,6 +1074,8 @@ function renderViewerView() {
                 <span class="cs2-clock-phase" id="round-clock-phase">LIVE</span>
               </div>
               <span class="cs2-team-score t" id="hud-score-t">0</span>
+              <span class="cs2-alive ct" id="hud-alive-ct" aria-label="Counter-Terrorists alive"></span>
+              <span class="cs2-alive t" id="hud-alive-t" aria-label="Terrorists alive"></span>
             </div>
             <div class="match-scoreboard-strip" id="match-scoreboard-strip"></div>
             <div class="bomb-action-bar" id="bomb-action-bar">
@@ -1082,13 +1087,18 @@ function renderViewerView() {
         </div>
 
         <div class="pov-bottom-hud" id="pov-bottom-hud">
+          <span class="pov-money" id="pov-hud-money"></span>
           <div class="pov-left-wing">
             <div class="pov-stat-row">
               <span class="pov-hp-big" id="pov-hud-hp">100</span>
               <span class="pov-armor-tag" id="pov-hud-armor">100</span>
-              <span class="pov-player-tag" id="pov-hud-name"></span>
             </div>
             <div class="pov-hp-bar"><div class="pov-hp-bar-fill" id="pov-hud-hp-fill" style="width:100%"></div></div>
+          </div>
+          <div class="pov-observer">
+            <span id="pov-observer-name"></span>
+            <span id="pov-observer-slot" aria-hidden="true"></span>
+            <span id="pov-observer-weapon"></span>
           </div>
           <div class="pov-right-wing">
             <div class="pov-util-strip" id="pov-hud-util"></div>

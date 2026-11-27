@@ -41,6 +41,7 @@
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  position: relative;
   width: clamp(28px, 5.0vh, 64px);
   padding: 0;
   background: none;
@@ -93,7 +94,7 @@
   inset: 0;
   display: grid;
   place-items: center;
-  padding-bottom: 8px;
+  padding-bottom: 0;
   color: rgba(255, 255, 255, .28);
   font: 700 clamp(12px, 2.4vh, 26px)/1 var(--hud-font);
   pointer-events: none;
@@ -101,7 +102,7 @@
 
 .hud-sq-gear {
   position: absolute;
-  top: calc(100% + 13px);
+  top: calc(100% + 31px);
   left: 0;
   right: 0;
   justify-content: center;
@@ -114,17 +115,20 @@
 .hud-hp-num {
   position: absolute;
   left: 3px;
-  bottom: 3px;
-  font: 700 13px/1 var(--hud-digits);
-  color: #ffffff;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  bottom: -14px;
+  inset-inline: 0;
+  padding-left: 3px;
+  font: 700 11px/13px var(--hud-digits);
+  text-align: left;
+  background: rgba(255, 255, 255, .90);
+  color: #17130f;
   z-index: 1;
 }
 
 .hud-player-weapon {
   position: absolute;
   left: 50%;
-  top: 100%;
+  top: calc(100% + 17px);
   transform: translateX(-50%);
   display: flex;
   align-items: center;
@@ -186,7 +190,7 @@
 
 .hud-money {
   display: none;
-  margin-top: 23px;
+  margin-top: 15px;
   background: rgba(0, 0, 0, 0.5);
   text-align: center;
   font: 600 10px/14px var(--hud-digits);
@@ -195,7 +199,11 @@
 
 .native-top-hud.money-visible .hud-money {
   display: block;
+  margin-bottom: 28px;
 }
+
+.money-visible .hud-player-weapon { top: calc(100% + 32px); }
+.money-visible .hud-sq-gear { top: calc(100% + 47px); }
 
 .hud-player-row.observed .hud-player-frame {
   background: rgba(28, 34, 42, 0.74);
@@ -216,7 +224,8 @@
 }
 
 .hud-player-row.dead .hud-hp-num {
-  color: #aab0b6;
+  color: #fff;
+  background: transparent;
 }
 
 .round-clock-banner {
@@ -256,6 +265,14 @@
 .cs2-team-score.t {
   color: var(--hud-t-bright);
 }
+
+.cs2-alive {
+  font: 700 10px/1 var(--hud-digits);
+  text-align: center;
+}
+
+.cs2-alive.ct { color: var(--hud-ct-bright); }
+.cs2-alive.t { color: var(--hud-t-bright); }
 
 .cs2-clock-center {
   grid-column: 1 / -1;
@@ -414,14 +431,35 @@
   display: none;
   align-items: flex-end;
   justify-content: space-between;
-  padding: 0 22px 14px 25%;
+  --pov-team-ink: var(--hud-t-bright);
+  min-height: 66px;
   z-index: 18;
   pointer-events: none;
   font-family: var(--hud-font);
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
 }
 
+.pov-bottom-hud.team-ct {
+  --pov-team-ink: var(--hud-ct-bright);
+}
+
+.pov-money {
+  position: absolute;
+  left: 2.5%;
+  bottom: 27px;
+  color: var(--pov-team-ink);
+  font: 700 clamp(21px, 3.2vh, 38px)/1 var(--hud-digits);
+}
+
+.pov-money:not(:empty)::before {
+  content: '$';
+  font-family: var(--hud-font);
+}
+
 .pov-left-wing {
+  position: absolute;
+  right: calc(66% + 6px);
+  bottom: 22px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -437,8 +475,8 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font: 700 40px/1 var(--hud-digits);
-  color: #ffffff;
+  font: 700 clamp(29px, 3.8vh, 44px)/1 var(--hud-digits);
+  color: var(--pov-team-ink);
 }
 
 .pov-hp-big.dead {
@@ -472,26 +510,64 @@
   color: rgba(233, 238, 243, 0.82);
 }
 
-.pov-player-tag {
-  display: none;
-}
-
 .pov-hp-bar {
-  width: 210px;
-  height: 2px;
+  width: 3.7em;
+  height: 3px;
+  align-self: flex-end;
   background: rgba(255, 255, 255, 0.16);
-  display: none;
 }
 
 .pov-hp-bar-fill {
   height: 100%;
-  background: rgba(226, 232, 240, 0.8);
+  background: var(--pov-team-ink);
+}
+
+.pov-observer {
+  position: absolute;
+  bottom: 6px;
+  left: 34%;
+  right: 34%;
+  height: clamp(46px, 6.65vh, 80px);
+  border-inline: 2px solid var(--pov-team-ink);
+  background: linear-gradient(90deg, rgba(36, 23, 12, .9), rgba(12, 10, 8, .8));
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 4px 10px;
+  color: var(--pov-team-ink);
+  font-weight: 700;
+}
+
+.pov-observer span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pov-observer span:last-child {
+  justify-self: end;
+  color: #fff;
+}
+
+#pov-observer-slot {
+  display: grid;
+  place-items: center;
+  width: clamp(34px, 5.6vh, 64px);
+  aspect-ratio: 1;
+  border: 2px solid var(--pov-team-ink);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, .42);
+  font: 700 22px/1 var(--hud-digits);
 }
 
 .pov-right-wing {
+  position: absolute;
+  left: calc(66% + 6px);
+  bottom: 22px;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 2px;
 }
 
@@ -566,7 +642,8 @@
 }
 
 .pov-ammo-text .ammo-mag {
-  color: #ffffff;
+  color: var(--pov-team-ink);
+  border-bottom: 2px solid currentColor;
 }
 
 .pov-ammo-text .ammo-sep {
@@ -579,21 +656,28 @@
   color: rgba(233, 238, 243, 0.62);
 }
 
-.pov-bottom-hud.deathcam-mode {
-  border: 0;
+.deathcam-mode .pov-observer,
+.deathcam-mode .pov-money,
+.deathcam-mode .pov-hp-bar {
+  display: none;
+}
+
+.deathcam-mode .pov-right-wing {
+  left: auto;
+  right: 12px;
 }
 
 /* ---------- Killfeed ---------- */
 
 .killfeed {
   position: absolute;
-  top: 92px;
-  right: 8px;
+  top: 6.9%;
+  right: 0.7%;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 2px;
-  max-width: 46%;
+  max-width: calc(50% - 27vh - 60px);
   z-index: 17;
   pointer-events: none;
   font-family: var(--hud-font);
@@ -602,9 +686,11 @@
 .killfeed-item {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 8px;
-  background: rgba(0, 0, 0, 0.66);
+  gap: 5px;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 2px 7px;
+  background: rgba(0, 0, 0, 0.72);
   border: 1px solid rgba(255, 255, 255, 0.08);
   font-size: 12px;
   line-height: 16px;
@@ -613,8 +699,8 @@
 }
 
 .killfeed-item.kf-highlight {
-  border-color: rgba(255, 255, 255, 0.55);
-  background: rgba(16, 19, 23, 0.72);
+  border-color: rgba(192, 47, 45, 0.95);
+  background: rgba(18, 7, 6, 0.83);
 }
 
 .killfeed-item.kf-death {
@@ -630,10 +716,6 @@
   font-weight: 600;
 }
 
-.kf-victim {
-  color: #e7eaee;
-}
-
 .kf-assist {
   display: inline-flex;
   align-items: center;
@@ -644,6 +726,7 @@
 }
 
 .kf-weapon-cell {
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   gap: 0;
@@ -1144,5 +1227,12 @@
   .radar-box.player-radar {
     width: 150px;
     height: 150px;
+  }
+}
+
+@media (max-aspect-ratio: 5 / 4) {
+  .killfeed {
+    top: 96px;
+    max-width: 45%;
   }
 }

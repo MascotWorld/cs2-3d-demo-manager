@@ -3978,6 +3978,7 @@ export class DemoScene {
     const killWindow = Math.max(32, Math.round(2.0 * tickRate));
     for (const k of this.roundReplay.kills || []) {
       if (k.tick > tick || tick - k.tick > killWindow) continue;
+      if (deathCamActive && k.victim_slot === observedSlot) continue;
       const item = this._getKillPoolItem(killIdx++);
       const [kx, ky, kz] = cs2ToThree(k.victim_pos[0], k.victim_pos[1], k.victim_pos[2] + 36);
       item.mesh.visible = true;
