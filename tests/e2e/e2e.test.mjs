@@ -50,7 +50,7 @@ async function waitForHealth(url, timeoutMs = 15000) {
 
 async function assertTagsAndHudClean(page, label) {
   const check = await page.evaluate(() => {
-    const hudSelectors = ['.radar-box', '#team-hud-ct', '#team-hud-t', '.killfeed', '.round-clock-banner', '#flash-meter', '.pov-left-wing', '.pov-right-wing'];
+    const hudSelectors = ['#cs2-radar', '#team-hud-ct', '#team-hud-t', '.cs2-killfeed', '.cs2-clock', '.cs2-scores', '#flash-meter', '.cs2-hp-plate', '.cs2-ammo-plate'];
     const hudRects = hudSelectors
       .map((sel) => {
         const el = document.querySelector(sel);
@@ -163,64 +163,74 @@ async function assertNativeHudLayout(page, mode) {
     };
     const style = (sel, prop) => getComputedStyle(document.querySelector(sel))[prop];
     const stage = document.querySelector('.stage-wrap').getBoundingClientRect();
-    const card = document.querySelector('#team-hud-ct .hud-player-row');
+    const card = document.querySelector('#team-hud-ct .cs2-card');
     return {
       stage: { width: stage.width, height: stage.height },
-      top: rect('.native-top-hud'),
+      top: rect('.cs2-top'),
       ct: rect('#team-hud-ct'),
       tteam: rect('#team-hud-t'),
-      clock: rect('.round-clock-banner'),
-      radar: rect('.radar-box'),
-      killfeed: rect('.killfeed'),
-      cards: document.querySelectorAll('#team-hud-ct .hud-player-row, #team-hud-t .hud-player-row').length,
+      clock: rect('.cs2-clock'),
+      scores: rect('.cs2-scores'),
+      radar: rect('#cs2-radar'),
+      callout: rect('#radar-callout'),
+      killfeed: rect('.cs2-killfeed'),
+      cards: document.querySelectorAll('#team-hud-ct .cs2-card, #team-hud-t .cs2-card').length,
       card: card ? card.getBoundingClientRect().width : 0,
-      cardBg: style('#team-hud-ct .hud-player-frame', 'backgroundColor'),
-      cardRadius: style('#team-hud-ct .hud-player-frame', 'borderRadius'),
-      tileContents: [...document.querySelectorAll('.hud-player-frame')].every((tile) => {
+      cardHeight: card ? card.getBoundingClientRect().height : 0,
+      cardBg: style('#team-hud-ct .cs2-card', 'backgroundColor'),
+      cardRadius: style('#team-hud-ct .cs2-card', 'borderRadius'),
+      tileContents: [...document.querySelectorAll('.cs2-card')].every((tile) => {
         const box = tile.getBoundingClientRect();
-        return ['.hud-hp-num', '.hud-player-weapon', '.hud-sq-gear'].every((selector) => {
-          const r = tile.querySelector(selector).getBoundingClientRect();
-          return r.top >= box.top && r.bottom <= box.bottom;
+        return ['.cs2-card-hp-row', '.cs2-card-gear'].every((selector) => {
+          const el = tile.querySelector(selector);
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          return r.top >= box.top - 1 && r.bottom <= box.bottom + 1;
         });
       }),
-      teamEmblems: document.querySelectorAll('.cs2-team-score svg').length,
-      clockPlate: getComputedStyle(document.querySelector('.cs2-clock-center'), '::before').clipPath,
-      radarRadius: style('.radar-box', 'borderRadius'),
-      hudFont: style('.hud-player-name', 'fontFamily'),
+      teamEmblems: document.querySelectorAll('.cs2-score svg').length,
+      aliveIcons: document.querySelectorAll('.cs2-alive svg').length,
+      radarRadius: style('#cs2-radar canvas', 'borderRadius'),
+      hudFont: style('.cs2-card-name', 'fontFamily'),
       digitsFont: style('#round-clock-text', 'fontFamily'),
       nativeFonts: [...document.fonts].filter((f) => /CS2 HUD/.test(f.family) && f.status === 'loaded').map((f) => `${f.family} ${f.weight}`),
-      icons: document.querySelectorAll('.hud-player-weapon img, .hud-player-weapon svg').length,
-      nativeIcons: document.querySelectorAll('.hud-player-weapon img').length,
-      leftWing: rect('.pov-left-wing'),
-      rightWing: rect('.pov-right-wing'),
-      povHud: rect('#pov-bottom-hud'),
+      icons: document.querySelectorAll('.cs2-card-gear img, .cs2-card-gear svg').length,
+      nativeIcons: document.querySelectorAll('.cs2-card-gear img').length,
+      hpPlate: rect('.cs2-hp-plate'),
+      ammoPlate: rect('.cs2-ammo-plate'),
+      utility: rect('.cs2-utility'),
       povRecording: !!window.__CS2_SCENE__?.roundReplay?.is_pov,
     };
   });
   assert.equal(layout.cards, 10, 'Both team card rows must render five players each');
-  assert.ok(Math.abs(layout.card - 45.9) < 1,
-    `Expected a 46px player tile at the 900px test viewport, got ${layout.card}`);
+  assert.ok(Math.abs(layout.card - 48) < 1,
+    `Expected a 48px player card, got ${layout.card}`);
+  assert.ok(Math.abs(layout.cardHeight - 124) < 1,
+    `Expected a 124px tall player card, got ${layout.cardHeight}`);
   assert.ok(layout.top && Math.abs((layout.top.left + layout.top.right) / 2 - layout.stage.width / 2) < 12,
     'Top cards and clock must stay centered');
   assert.ok(layout.ct.right <= layout.clock.left && layout.tteam.left >= layout.clock.right,
     `Cards must flank the clock without overlap: ${JSON.stringify({ ct: layout.ct, clock: layout.clock, t: layout.tteam })}`);
-  assert.ok(layout.radar && layout.radar.width >= 150 && layout.radar.left <= 20 && layout.radar.top <= 20,
+  assert.ok(layout.radar && Math.abs(layout.radar.width - 258) < 1 && layout.radar.left <= 20 && layout.radar.top <= 20,
     `Spectator radar must sit square in the top-left, got ${JSON.stringify(layout.radar)}`);
-  assert.equal(layout.cardRadius, '0px', 'Native teammate tiles are square');
-  assert.ok(layout.tileContents, 'Every tile contains its own HP, weapon and utility rows');
+  assert.ok(layout.callout && layout.callout.top > layout.radar.bottom && layout.callout.left <= 20,
+    `Callout must sit right under the radar, got ${JSON.stringify(layout.callout)}`);
+  assert.equal(layout.cardRadius, '0px', 'Native teammate cards are square');
+  assert.ok(layout.tileContents, 'Every card contains its own HP row and gear row');
   assert.equal(layout.teamEmblems, 2);
-  assert.match(layout.clockPlate, /^polygon\(/);
+  assert.equal(layout.aliveIcons, 2);
   assert.ok(layout.killfeed && layout.killfeed.right >= layout.stage.width - 20 && layout.killfeed.width < layout.stage.width * 0.5,
     `Killfeed must hug the top-right corner, got ${JSON.stringify(layout.killfeed)}`);
   assert.match(layout.hudFont, /CS2 HUD|Stratum2/, `HUD font stack must prefer the local CS2 face, got ${layout.hudFont}`);
+  assert.match(layout.digitsFont, /CS2 HUD Digits|CS2 HUD/, `Digits must use the monodigit face, got ${layout.digitsFont}`);
   assert.ok(layout.icons > 0, 'HUD must draw weapon icons for living players');
   assert.ok(layout.nativeIcons > 0, 'HUD must serve the local Valve equipment icons when the assets are installed');
   assert.ok(layout.nativeFonts.length >= 2, `Local CS2 fonts must load in the browser, got ${layout.nativeFonts.join(', ')}`);
   if (mode === 'pov') {
     assert.equal(layout.radarRadius, layout.povRecording ? '50%' : '0px', `Radar follows the recording: round only for POV recordings, square for GOTV (got ${layout.radarRadius})`);
-    assert.ok(layout.leftWing && layout.leftWing.left < layout.stage.width * 0.45, 'Health cluster stays left of center');
-    assert.ok(layout.rightWing && layout.rightWing.right > layout.stage.width * 0.6, 'Ammo cluster stays right of center');
-    assert.ok(layout.leftWing.right < layout.rightWing.left || layout.leftWing.right < layout.stage.width * 0.55,
+    assert.ok(layout.hpPlate && layout.hpPlate.left < layout.stage.width * 0.45, 'Health cluster stays left of center');
+    assert.ok(layout.ammoPlate && layout.ammoPlate.right > layout.stage.width * 0.6, 'Ammo cluster stays right of center');
+    assert.ok(layout.hpPlate.right < layout.ammoPlate.left || layout.hpPlate.right < layout.stage.width * 0.55,
       'Bottom center of the POV HUD must stay empty');
   } else {
     assert.equal(layout.radarRadius, '0px', 'Spectator (GOTV) radar is square');
@@ -308,10 +318,10 @@ async function assertObservedPovDeath(page, replay) {
       placeholders: s.playerRigs.filter((r) => r.missingModel).length,
       bodyPos: rig?.root.position.toArray() || [0, 0, 0],
       labelHidden: !label || label.style.display === 'none',
-      cardDead: !!card?.classList.contains('dead'),
-      cardWeapon: card?.querySelector('.hud-player-weapon')?.innerHTML.trim() || '',
-      cardGear: card?.querySelector('.hud-sq-gear')?.innerHTML.trim() || '',
-      cardHp: card?.querySelector('.hud-hp-num')?.textContent || '',
+      cardDead: !!card?.classList.contains('cs2-card-dead'),
+      cardWeapon: card?.querySelector('.cs2-card-weapon')?.innerHTML.trim() || '',
+      cardGear: card?.querySelector('.cs2-card-gear')?.innerHTML.trim() || '',
+      cardHp: card?.querySelector('.cs2-card-hp-row')?.textContent || '',
       hudText: document.getElementById('pov-bottom-hud').innerText,
       ammo: document.getElementById('pov-hud-ammo')?.innerText.trim() || '',
     };
@@ -565,6 +575,7 @@ async function run() {
 
     browser = await chromium.launch({
       channel: process.env.E2E_BROWSER_CHANNEL,
+      executablePath: process.env.E2E_BROWSER_EXECUTABLE || undefined,
       headless: true,
       args: ['--no-proxy-server', '--enable-webgl', '--enable-unsafe-swiftshader'],
     });
@@ -657,7 +668,7 @@ async function run() {
     await page.waitForFunction(() => [...document.querySelectorAll('.player-3d-tag')].every((el) => el.style.display === 'none'));
     await assertNativeHudLayout(page, 'tactical');
     await page.waitForFunction(() => {
-      const portraits = [...document.querySelectorAll('.hud-operator-portrait')];
+      const portraits = [...document.querySelectorAll('.cs2-card-portrait')];
       return portraits.length === 10 && portraits.every((img) => img.complete && img.naturalWidth === 128)
         && new Set(portraits.map((img) => img.src)).size === 2;
     });
@@ -775,7 +786,7 @@ async function run() {
     // 4. Switch to smoke action round, verify header sync, frame active smokes in Tactical Orbit, capture 03
     console.log(`Switching to smoke round ${smokeRound} (tick=${smokeFocus.tick})...`);
     await clickTool(page, `.round-pill[data-round="${smokeRound}"]`);
-    await page.waitForFunction((rNum) => document.getElementById('match-scoreboard-strip')?.textContent.includes(`Round ${rNum}/`), smokeRound);
+    await page.waitForFunction((rNum) => document.querySelector(`.round-pill[data-round="${rNum}"]`)?.classList.contains('active'), smokeRound);
 
     await page.evaluate(({ tick, pos }) => {
       const s = window.__CS2_SCENE__;
@@ -803,12 +814,22 @@ async function run() {
     await clickTool(page, '[data-cam-mode="tactical"]');
 
     // 4a. Buy-phase only money under the top cards
-    const liveMoney = await page.evaluate(() => getComputedStyle(document.querySelector('.hud-money')).display);
-    assert.equal(liveMoney, 'none', 'Money under the top cards must stay hidden outside freeze/buy time');
+    const liveMoney = await page.evaluate(() => {
+      const money = document.getElementById('pov-hud-money');
+      return money ? getComputedStyle(money).display : 'none';
+    });
+    assert.equal(liveMoney, 'none', 'Money must stay hidden outside freeze/buy time');
     await page.evaluate(() => { window.__CS2_SCENE__.currentTick = window.__CS2_SCENE__.roundReplay.summary.freeze_end_tick - 32; });
-    await page.waitForFunction(() => document.querySelector('.native-top-hud')?.classList.contains('money-visible'));
-    const buyMoney = await page.evaluate(() => getComputedStyle(document.querySelector('.hud-money')).display);
-    assert.equal(buyMoney, 'block', 'Money must show during freeze/buy time');
+    await page.waitForFunction(() => [...document.querySelectorAll('.cs2-card-money')].some((el) => el.textContent.startsWith('$')));
+    const buyMoney = await page.evaluate(() => {
+      const money = document.getElementById('pov-hud-money');
+      const cardMoney = [...document.querySelectorAll('.cs2-card-money')].filter((el) => el.textContent.startsWith('$')).length;
+      return { pov: money ? getComputedStyle(money).display : 'none', cards: cardMoney };
+    });
+    assert.ok(buyMoney.cards > 0, 'Roster cards must carry the buy-time money');
+    if (await page.evaluate(() => document.getElementById('pov-bottom-hud')?.style.display === 'flex')) {
+      assert.notEqual(buyMoney.pov, 'none', 'The observed player HUD must show money during freeze/buy time');
+    }
 
     // 5. Test -1t / +1t stepping and Play/Pause
     const t0 = await page.evaluate(() => window.__CS2_VIEWER__.currentTick);
@@ -847,7 +868,10 @@ async function run() {
     await page.waitForTimeout(150);
     await assertTagsAndHudClean(page, '04-viewer-pov');
     await assertNativeHudLayout(page, 'pov');
-    await page.waitForFunction(() => document.querySelector('#pov-inventory .pov-slot.active'));
+    await page.waitForFunction(() => {
+      const inv = document.getElementById('pov-inventory');
+      return inv && !inv.hidden && inv.querySelectorAll('img').length > 0;
+    });
     const povTelemetry = await page.evaluate(() => {
       const s = window.__CS2_SCENE__;
       const frame = s.roundReplay.frames.findLast((f) => f.t <= s.currentTick);
@@ -856,15 +880,16 @@ async function run() {
       return {
         place,
         label: document.getElementById('radar-label').textContent,
-        slotCount: document.querySelectorAll('#pov-inventory .pov-slot').length,
+        callout: document.getElementById('radar-callout')?.textContent.trim() || '',
+        utilityIcons: document.querySelectorAll('#pov-inventory img').length,
         recorded: player.slice(23, 26).filter((key) => key >= 0).length,
       };
     });
     assert.ok(povTelemetry.recorded >= 2, 'Replay should include more than just the equipped weapon');
-    assert.equal(povTelemetry.slotCount, povTelemetry.recorded);
+    assert.ok(povTelemetry.utilityIcons > 0, 'The observed player HUD must show the carried utility icons');
     if (povTelemetry.place) {
-      assert.equal(povTelemetry.label.replace(/[^a-z0-9]/gi, ''),
-        povTelemetry.place.replace(/[^a-z0-9]/gi, ''));
+      assert.ok(povTelemetry.callout.replace(/[^a-z0-9]/gi, '').includes(povTelemetry.place.replace(/[^a-z0-9]/gi, '')),
+        `Callout must name the observed player's place, got ${povTelemetry.callout}`);
     }
     await shot(page, '04-viewer-pov.png');
 

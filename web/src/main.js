@@ -322,22 +322,21 @@ function renderTeamSideHudPanels() {
   }
 
   const portraits = operatorPortraits([[3, sceneInstance?.ctPlayerTemplate], [2, sceneInstance?.tPlayerTemplate]]);
-  const rowHtml = (p, portrait) => `
-    <button type="button" class="hud-player-row" id="hud-player-${p.slot}" data-pov-slot="${p.slot}" title="${esc(p.name)}" aria-label="Spectate ${esc(p.name)}">
-      <span class="hud-player-name">${esc(p.name)}</span>
-      <span class="hud-player-frame${portrait ? ' has-portrait' : ''}" data-slot="${(p.slot + 1) % 10}">
-        ${portrait ? `<img class="hud-operator-portrait" src="${portrait}" alt="">` : ''}
-        <span class="hud-hp-num">100</span>
-        <span class="hp-track"><span class="hud-hp-fill" style="width:100%;"></span></span>
-        <span class="hud-money">$0</span>
-        <span class="hud-player-weapon"></span>
-        <span class="hud-sq-gear"></span>
+  const rowHtml = (p, portrait, side) => `
+    <button type="button" class="cs2-card ${side}" id="hud-player-${p.slot}" data-pov-slot="${p.slot}" title="${esc(p.name)}" aria-label="Spectate ${esc(p.name)}">
+      <span class="cs2-card-name">${esc(p.name)}</span>
+      <span class="cs2-card-body">
+        ${portrait ? `<img class="cs2-card-portrait" src="${portrait}" alt="">` : ''}
       </span>
+      <span class="cs2-card-hp-row">100</span>
+      <span class="cs2-card-money"></span>
+      <span class="cs2-card-bar"><i style="width:100%;"></i></span>
+      <span class="cs2-card-gear"></span>
     </button>
   `;
 
-  ctEl.innerHTML = ctPlayers.map((p) => rowHtml(p, portraits.get(3))).join('');
-  tEl.innerHTML = tPlayers.map((p) => rowHtml(p, portraits.get(2))).join('');
+  ctEl.innerHTML = ctPlayers.map((p) => rowHtml(p, portraits.get(3), 'ct')).join('');
+  tEl.innerHTML = tPlayers.map((p) => rowHtml(p, portraits.get(2), 't')).join('');
 
   document.querySelectorAll('[data-pov-slot]').forEach((el) => {
     el.addEventListener('click', () => {
@@ -406,7 +405,7 @@ function updateViewerControlsDOM() {
   const markersEl = document.getElementById('scrubber-markers');
   const rr = state.roundReplay;
   document.getElementById('pov-recording-warning').hidden = !rr?.is_pov;
-  document.querySelector('.radar-box')?.classList.toggle('player-radar', !!rr?.is_pov);
+  document.getElementById('cs2-radar')?.classList.toggle('is-round', !!rr?.is_pov);
   const matchScrubber = document.getElementById('match-timeline-scrubber');
   if (matchScrubber && rr?.frames?.length && !followingRound()) {
     matchScrubber.max = String(Math.max(Number(matchScrubber.max), rr.frames.at(-1).t));
@@ -560,6 +559,8 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
     });
   }
 
+  updateMatchHeaderScoreboard();
+
   // Round Clock + Bomb Plant/Defuse Bar
   const clockBox = document.getElementById('round-clock-box');
   const clockText = document.getElementById('round-clock-text');
@@ -643,9 +644,16 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
   const obs = state.cameraMode === 'pov' ? snapshot?.players?.[obsSlot] : null;
   const radarPlayer = state.cameraMode === 'chase' ? snapshot?.players?.[obsSlot] : obs;
   const place = radarPlayer?.[0] === 1 ? rr?.places?.[radarPlayer[26]] : '';
-  document.getElementById('radar-label').textContent = place
-    ? place.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replaceAll('_', ' ')
-    : state.activeDemo.metadata.map_name;
+  const callout = document.getElementById('radar-callout');
+  const calloutMap = document.getElementById('radar-label');
+  if (calloutMap) calloutMap.textContent = state.activeDemo.metadata.map_name;
+  const calloutPlace = document.getElementById('radar-level-badge');
+  if (calloutPlace) {
+    calloutPlace.textContent = place
+      ? place.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replaceAll('_', ' ')
+      : '';
+  }
+  if (callout) callout.hidden = !place;
   const obsAlive = !!(obs && obs[0] === 1 && (obs[7] || 0) > 0);
   const damage = document.getElementById('pov-damage');
   if (damage) {
@@ -673,18 +681,10 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
   const inventory = document.getElementById('pov-inventory');
   inventory.hidden = state.cameraMode !== 'pov' || !obsAlive || !!snapshot?.deathCamActive;
   if (!inventory.hidden) {
-    const slots = [weapons[obs[23]], weapons[obs[24]], weapons[obs[25]]];
-    if (obsWeapon && !slots.includes(obsWeapon)) {
-      const category = weaponCategory(obsWeapon);
-      if (category === 'pistol') slots[1] ??= obsWeapon;
-      else if (category === 'knife') slots[2] ??= obsWeapon;
-      else if (['rifle', 'sniper', 'heavy', 'smg'].includes(category)) slots[0] ??= obsWeapon;
-    }
     const flags = obs[14] || 0;
-    const inventoryHtml = slots.map((weapon, i) => weapon ? `<div class="pov-slot${weapon === obsWeapon ? ' active' : ''}"><div class="pov-slot-glyph">${weaponSvgIcon(weapon, 'pov-slot-icon')}<span>${i + 1}</span></div>${weapon === obsWeapon ? `<span class="pov-slot-name">${esc(weapon)}</span>` : ''}</div>` : '').join('') +
-      `<div class="pov-slot-utility">${utilityIcons(unpackUtilityCounts(obs[19] || 0), 'pov-util-icon')}${flags & 2 ? defuseKitIcon('pov-kit-ico') : ''}</div>`;
+    const util = unpackUtilityCounts(obs[19] || 0);
+    const inventoryHtml = `${utilityIcons(util, 'cs2-utility-icon', 4)}${flags & 2 ? defuseKitIcon('cs2-utility-icon') : ''}`;
     if (inventory.innerHTML !== inventoryHtml) inventory.innerHTML = inventoryHtml;
-    inventory.classList.toggle('team-ct', obs[1] === 3);
   }
   const sniperScoped = state.cameraMode === 'pov' && obsAlive && isSniperWeapon(obsWeapon) && obsZoom > 0;
 
@@ -742,38 +742,34 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
       const hasKit = (flags & 2) !== 0;
       const mag = obs[16] >= 0 ? Math.round(obs[16]) : null;
       const res = obs[17] >= 0 ? Math.round(obs[17]) : null;
+      const buyPhase = clockInfo?.phase === 'freeze';
       const money = document.getElementById('pov-hud-money');
-      money.textContent = obs[15] >= 0 ? `${Math.round(obs[15])}` : '';
+      money.textContent = buyPhase && obs[15] >= 0 ? `$${Math.round(obs[15])}` : '';
+      money.style.display = buyPhase ? '' : 'none';
 
       document.getElementById('pov-observer-name').textContent = state.activeDemo?.players?.find((p) => p.slot === obsSlot)?.name ?? '';
-      document.getElementById('pov-observer-slot').textContent = String((obsSlot + 1) % 10);
       document.getElementById('pov-observer-weapon').textContent = obsWeapon || 'Knife';
       povHud.style.display = 'flex';
       povHud.classList.toggle('team-ct', isCT);
       povHud.classList.toggle('team-t', !isCT);
       povHud.classList.remove('deathcam-mode');
       const hpEl = document.getElementById('pov-hud-hp');
-      const hpFillEl = document.getElementById('pov-hud-hp-fill');
       const arEl = document.getElementById('pov-hud-armor');
       const wEl = document.getElementById('pov-hud-weapon');
       const ammoEl = document.getElementById('pov-hud-ammo');
       if (hpEl) {
-        hpEl.innerHTML = `${hpCrossIcon('pov-hp-cross')}<span>${hp}</span>`;
-        hpEl.className = 'pov-hp-big';
-      }
-      if (hpFillEl) {
-        hpFillEl.style.width = `${Math.max(0, Math.min(100, hp))}%`;
+        hpEl.innerHTML = `${hpCrossIcon('cs2-hp-cross')}<span>${hp}</span>`;
       }
       if (arEl) {
-        arEl.innerHTML = `${armorIcon(hasHelm, 'pov-ar-ico')}<span>${armor}</span>${hasKit ? defuseKitIcon('pov-kit-ico') : ''}`;
+        arEl.innerHTML = `${armorIcon(hasHelm, 'cs2-armor-icon')}<span>${armor}</span>${hasKit ? defuseKitIcon('cs2-armor-icon') : ''}`;
       }
       if (wEl) {
-        wEl.innerHTML = weaponSvgIcon(obsWeapon || 'knife', 'pov-w-svg');
+        wEl.innerHTML = weaponSvgIcon(obsWeapon || 'knife', 'cs2-weapon-silhouette');
         wEl.title = obsWeapon || 'Knife';
       }
       if (ammoEl) {
         ammoEl.innerHTML = mag !== null
-          ? `<span class="ammo-mag">${mag}</span><span class="ammo-sep">/</span><span class="ammo-res">${res ?? 0}</span>`
+          ? `<span class="cs2-ammo-mag">${mag}</span><span class="cs2-ammo-sep">/</span><span class="cs2-ammo-res">${res ?? 0}</span>`
           : '';
       }
     } else if (state.cameraMode === 'pov' && (snapshot?.deathCamActive || (state.cameraMode === 'pov' && obs && !obsAlive))) {
@@ -781,37 +777,34 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
       povHud.style.display = 'flex';
       povHud.classList.add('deathcam-mode');
       const hpEl = document.getElementById('pov-hud-hp');
-      const hpFillEl = document.getElementById('pov-hud-hp-fill');
       const arEl = document.getElementById('pov-hud-armor');
       const wEl = document.getElementById('pov-hud-weapon');
       const ammoEl = document.getElementById('pov-hud-ammo');
       if (hpEl) {
-        hpEl.innerHTML = `${skullIcon('pov-hp-cross')}<span>0</span>`;
-        hpEl.className = 'pov-hp-big dead';
+        hpEl.innerHTML = `${skullIcon('cs2-hp-cross')}<span>0</span>`;
       }
-      if (hpFillEl) hpFillEl.style.width = '0%';
       if (arEl) arEl.innerHTML = '';
       if (wEl) {
         wEl.innerHTML = killEv
-          ? `<span>KILLED BY ${esc(killEv.killer_name)}</span>`
-          : `<span>ELIMINATED</span>`;
+          ? `<span class="cs2-kill-note">KILLED BY ${esc(killEv.killer_name)}</span>`
+          : `<span class="cs2-kill-note">ELIMINATED</span>`;
       }
-      if (ammoEl) ammoEl.innerHTML = killEv ? weaponSvgIcon(killEv.weapon, 'pov-w-svg') : '';
+      if (ammoEl) ammoEl.innerHTML = killEv ? weaponSvgIcon(killEv.weapon, 'cs2-weapon-silhouette') : '';
     } else {
       povHud.style.display = 'none';
     }
   }
 
-  // Top CS2 Player Squares indexed strictly by `player.slot`
+  // Top CS2 roster cards indexed strictly by `player.slot`
   if (snapshot && state.activeDemo) {
     const buyPhase = clockInfo?.phase === 'freeze';
     const aliveBySide = [0, 0, 0, 0];
     for (const p of snapshot.players) {
       if (p?.[0] === 1 && p[7] > 0 && (p[1] === 2 || p[1] === 3)) aliveBySide[p[1]]++;
     }
-    document.getElementById('hud-alive-ct').textContent = aliveBySide[3];
-    document.getElementById('hud-alive-t').textContent = aliveBySide[2];
-    document.querySelector('.native-top-hud')?.classList.toggle('money-visible', buyPhase);
+    const aliveIcon = '<svg viewBox="0 0 12 16" aria-hidden="true"><circle cx="6" cy="3" r="2.6"/><path d="M6 6.4c-3 0-4.6 1.6-4.6 4v2.2h9.2V10.4c0-2.4-1.6-4-4.6-4z"/></svg>';
+    document.getElementById('hud-alive-ct').innerHTML = `${aliveIcon}<span>${aliveBySide[3]}</span>`;
+    document.getElementById('hud-alive-t').innerHTML = `${aliveIcon}<span>${aliveBySide[2]}</span>`;
     for (const player of state.activeDemo.players) {
       const slot = player.slot;
       const row = document.getElementById(`hud-player-${slot}`);
@@ -826,29 +819,20 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
       const wIdx = p ? p[13] : -1;
       const weapon = wIdx >= 0 && weapons[wIdx] ? weapons[wIdx] : '';
       const flash = p ? p[11] || 0 : 0;
-      row.classList.toggle('dead', !alive);
-      row.classList.toggle('observed', (state.cameraMode === 'pov' || state.cameraMode === 'chase') && obsSlot === slot);
-      const hpEl = row.querySelector('.hud-hp-num');
-      const fillEl = row.querySelector('.hud-hp-fill');
-      const wEl = row.querySelector('.hud-player-weapon');
-      const gearEl = row.querySelector('.hud-sq-gear');
-      const moneyEl = row.querySelector('.hud-money');
-      if (hpEl) {
-        hpEl.textContent = alive ? String(hp) : '×';
-      }
+      row.classList.toggle('cs2-card-dead', !alive);
+      row.classList.toggle('cs2-card-observed', (state.cameraMode === 'pov' || state.cameraMode === 'chase') && obsSlot === slot);
+      const hpEl = row.querySelector('.cs2-card-hp-row');
+      const fillEl = row.querySelector('.cs2-card-bar > i');
+      const gearEl = row.querySelector('.cs2-card-gear');
+      const moneyEl = row.querySelector('.cs2-card-money');
       if (moneyEl) {
-        moneyEl.textContent = `$${Math.round(p ? p[15] || 0 : 0)}`;
+        moneyEl.textContent = buyPhase && alive ? `$${Math.round(p ? p[15] || 0 : 0)}` : '';
       }
+      if (hpEl) hpEl.textContent = alive ? String(hp) : '\u00d7';
       if (fillEl) fillEl.style.width = `${hp}%`;
-      if (wEl) {
-        wEl.innerHTML = alive
-          ? `${weaponSvgIcon(weapon || 'knife', 'sq-w-svg')}${flash > 0.15 ? deathNoticeIcon('blind', 'sq-blind-ico') : ''}`
-          : '';
-        wEl.title = alive ? weapon : 'Dead';
-      }
       if (gearEl) {
         gearEl.innerHTML = alive
-          ? `${armor > 0 ? armorIcon(hasHelm, 'sq-gear-ico') : ''}${hasKit ? defuseKitIcon('sq-kit-ico') : ''}${utilityIcons(unpackUtilityCounts(p[19]), 'sq-util-icon', 3)}`
+          ? `${weaponSvgIcon(weapon || 'knife', 'cs2-card-weapon')}${flash > 0.15 ? deathNoticeIcon('blind', 'cs2-card-icon') : ''}${armor > 0 ? armorIcon(hasHelm, 'cs2-card-icon') : ''}${hasKit ? defuseKitIcon('cs2-card-icon') : ''}${utilityIcons(unpackUtilityCounts(p[19]), 'cs2-card-icon', 3)}`
           : '';
       }
     }
@@ -867,18 +851,19 @@ function updateLiveFrameHUD(snapshot, currentTick, playing) {
         const isDeath = inPov && k.victim_slot === obsSlot;
         const isObserved = inPov && (k.killer_slot === obsSlot || k.assister_slot === obsSlot);
         const assistHtml = k.assister_name
-          ? `<span class="kf-assist">${k.assisted_flash ? deathNoticeIcon('flash-assist', 'kf-mod-icon') : '+'}<span class="${k.assister_team === 3 ? 'score-ct' : 'score-t'}">${esc(k.assister_name)}</span></span>`
+          ? `<span class="kf-assist">${k.assisted_flash ? deathNoticeIcon('flash-assist', 'kf-mod-icon') : '+'}<span class="${k.assister_team === 3 ? 'kf-ct' : 'kf-t'}">${esc(k.assister_name)}</span></span>`
           : '';
         const before = [[k.attacker_blind, 'blind'], [k.no_scope, 'noscope']].map(([enabled, icon]) => enabled ? deathNoticeIcon(icon, 'kf-mod-icon') : '').join('');
         const after = [[k.wallbang, 'wallbang'], [k.through_smoke, 'smoke'], [k.headshot, 'headshot']].map(([enabled, icon]) => enabled ? deathNoticeIcon(icon, 'kf-mod-icon') : '').join('');
-        return `<div class="killfeed-item ${isDeath ? 'kf-death' : isObserved ? 'kf-highlight' : ''}">
+        return `<div class="cs2-killfeed-item ${isDeath ? 'kf-death' : isObserved ? 'kf-highlight' : ''}">
           ${before}
           <span class="kf-killer">
-            <span class="${k.killer_team === 3 ? 'score-ct' : 'score-t'}">${esc(k.killer_name)}</span>
+            <span class="${k.killer_team === 3 ? 'kf-ct' : 'kf-t'}">${esc(k.killer_name)}</span>
             ${assistHtml}
           </span>
-          <span class="kf-weapon-cell" title="${esc(k.weapon)}">${weaponSvgIcon(k.weapon, 'kf-w-svg')}${after}</span>
-          <span class="kf-victim ${k.victim_team === 3 ? 'score-ct' : 'score-t'}">${esc(k.victim_name)}</span>
+          <span class="kf-weapon" title="${esc(k.weapon)}">${weaponSvgIcon(k.weapon, 'kf-w-svg')}</span>
+          <span class="kf-mods">${after}</span>
+          <span class="kf-victim ${k.victim_team === 3 ? 'kf-ct' : 'kf-t'}">${esc(k.victim_name)}</span>
         </div>`;
       })
       .join('');
@@ -1078,57 +1063,61 @@ function renderViewerView() {
           <div class="flash-meter-bar"><div class="flash-meter-fill" id="flash-meter-fill" style="width:0%"></div></div>
         </div>
 
-        <div class="radar-box">
-          <canvas id="radar-canvas" width="184" height="184"></canvas>
-          <span class="radar-label" id="radar-label">${esc(meta.map_name)}</span>
-          <span class="radar-level-badge" id="radar-level-badge">UPPER</span>
+        <div class="cs2-radar" id="cs2-radar">
+          <canvas id="radar-canvas" width="258" height="258"></canvas>
+          <span class="cs2-radar-callout" id="radar-callout">
+            <span class="cs2-callout-map" id="radar-label">${esc(meta.map_name)}</span>
+            <span id="radar-level-badge">UPPER</span>
+          </span>
         </div>
 
-        <div class="native-top-hud">
-          <aside class="team-hud ct" id="team-hud-ct" aria-label="Counter-Terrorists"></aside>
-          <div class="round-clock-banner">
-            <div class="round-clock-box" id="round-clock-box">
-              <span class="cs2-team-score ct"><b id="hud-score-ct">0</b><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 1 8 3v5c0 5-4 8-8 10-4-2-8-5-8-10V4zm0 3L5 6v3c0 3 2 5 5 7 3-2 5-4 5-7V6z"/><path d="m10 5 1 3 3 1-3 1-1 3-1-3-3-1 3-1z"/></svg></span>
-              <div class="cs2-clock-center">
-                <span id="round-clock-text">1:55</span>
-                <span class="cs2-clock-phase" id="round-clock-phase">LIVE</span>
-              </div>
-              <span class="cs2-team-score t"><b id="hud-score-t">0</b><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 1 2 5 6 .5-4.5 4 1.4 5.5-4.9-3-4.9 3 1.4-5.5L2 6.5 6 6l2 2-2 1 2 2 2-4z"/><path d="M4 15l2 2 10-8 1 1-9 9H6zm12 0-2 2-8-6-1 1 7 7h2z"/></svg></span>
-              <span class="cs2-alive ct" id="hud-alive-ct" aria-label="Counter-Terrorists alive"></span>
-              <span class="cs2-alive t" id="hud-alive-t" aria-label="Terrorists alive"></span>
+        <div class="cs2-top">
+          <aside class="cs2-team ct" id="team-hud-ct" aria-label="Counter-Terrorists"></aside>
+          <div class="cs2-centre">
+            <div class="cs2-clock" id="round-clock-box">
+              <span id="round-clock-text">1:55</span>
+              <span class="cs2-clock-phase" id="round-clock-phase">LIVE</span>
             </div>
-            <div class="match-scoreboard-strip" id="match-scoreboard-strip"></div>
+            <div class="cs2-scores">
+              <div class="cs2-score ct">
+                <b id="hud-score-ct">0</b>
+                <span class="cs2-alive ct" id="hud-alive-ct" aria-label="Counter-Terrorists alive"></span>
+              </div>
+              <div class="cs2-score t">
+                <b id="hud-score-t">0</b>
+                <span class="cs2-alive t" id="hud-alive-t" aria-label="Terrorists alive"></span>
+              </div>
+            </div>
             <div class="bomb-action-bar" id="bomb-action-bar">
               <span id="bomb-action-text">DEFUSING</span>
               <div class="bomb-action-track"><div class="bomb-action-fill" id="bomb-action-fill" style="width:0%"></div></div>
             </div>
           </div>
-          <aside class="team-hud t" id="team-hud-t" aria-label="Terrorists"></aside>
+          <aside class="cs2-team t" id="team-hud-t" aria-label="Terrorists"></aside>
         </div>
 
-        <div class="pov-inventory" id="pov-inventory" aria-label="Observed player equipment" hidden></div>
-        <div class="pov-bottom-hud" id="pov-bottom-hud">
-          <span class="pov-money" id="pov-hud-money"></span>
-          <div class="pov-left-wing">
-            <div class="pov-stat-row">
-              <span class="pov-hp-big" id="pov-hud-hp">100</span>
-              <span class="pov-armor-tag" id="pov-hud-armor">100</span>
+        <div class="cs2-bottom" id="pov-bottom-hud">
+          <div class="cs2-bottom-left">
+            <span class="cs2-money" id="pov-hud-money"></span>
+            <div class="cs2-hp-plate">
+              <span class="cs2-hp-value"><span id="pov-hud-hp">100</span></span>
+              <span class="cs2-armor" id="pov-hud-armor"></span>
             </div>
-            <div class="pov-hp-bar"><div class="pov-hp-bar-fill" id="pov-hud-hp-fill" style="width:100%"></div></div>
           </div>
-          <div class="pov-observer">
-            <span id="pov-observer-name"></span>
-            <span id="pov-observer-slot" aria-hidden="true"></span>
-            <span id="pov-observer-weapon"></span>
-          </div>
-          <div class="pov-right-wing">
-            <div class="pov-weapon-ammo-row">
-              <span class="pov-weapon-name" id="pov-hud-weapon">AK-47</span>
-              <span class="pov-ammo-text" id="pov-hud-ammo">30 / 90</span>
+          <div class="cs2-bottom-right">
+            <div class="cs2-utility" id="pov-inventory" aria-label="Observed player equipment" hidden></div>
+            <div class="cs2-ammo-plate">
+              <span class="cs2-weapon-silhouette" id="pov-hud-weapon"></span>
+              <span class="cs2-ammo" id="pov-hud-ammo">30 / 90</span>
             </div>
           </div>
         </div>
-        <div class="killfeed" id="killfeed-list" aria-label="Kill feed"></div>
+        <div class="cs2-observer" id="pov-observer">
+          <span id="pov-observer-name"></span>
+          <span class="cs2-observer-weapon" id="pov-observer-weapon"></span>
+        </div>
+        <div class="cs2-killfeed" id="killfeed-list" aria-label="Kill feed"></div>
+        <span class="cs2-round-strip" id="match-scoreboard-strip" hidden></span>
       </div>
       <details class="demo-tools" id="demo-tools" ${state.showDemoControls ? 'open' : ''}>
         <summary class="demo-tools-toggle">Demo UI <kbd>Shift+F2</kbd></summary>
@@ -1306,7 +1295,7 @@ function renderModals() {
         <div class="scoreboard-card" role="dialog" aria-modal="true" aria-label="5v5 Scoreboard">
           <header class="scoreboard-top">
             <div><strong>5v5 Scoreboard</strong><span>Competitive | ${esc(state.activeDemo.metadata.map_name)}</span></div>
-            <div class="scoreboard-match-score"><b class="score-ct">${curCT}</b><span>Round ${state.activeRoundNum}</span><b class="score-t">${curT}</b></div>
+            <div class="scoreboard-match-score"><b class="score-ct">${curCT}</b><span class="scoreboard-round">Round ${state.activeRoundNum}/${state.activeDemo.rounds.length}</span><b class="score-t">${curT}</b></div>
             <button class="scoreboard-close" id="btn-close-scoreboard" aria-label="Close scoreboard (Tab)">×</button>
           </header>
           ${renderTeamTable('COUNTER-TERRORISTS', 'ct', ctList, curCT, final.ct)}
